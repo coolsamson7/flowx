@@ -203,7 +203,11 @@ class OrderSaga : AbstractSaga<OrderSaga>() {
 // -------------------- APPLICATION --------------------
 
 @SpringBootApplication(
-    exclude = [org.springframework.boot.autoconfigure.r2dbc.R2dbcAutoConfiguration::class]
+    exclude = [
+        org.springframework.boot.autoconfigure.r2dbc.R2dbcAutoConfiguration::class,
+        org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration::class,           // ← add
+        org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration::class
+    ] // ← add
 )
 @Import(FlowxConfiguration::class)
 class DemoApplication(private val registry: SagaRegistry) {
