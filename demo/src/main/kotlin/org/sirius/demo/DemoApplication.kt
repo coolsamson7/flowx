@@ -11,6 +11,7 @@ import org.sirius.flowx.*
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.boot.runApplication
+import org.springframework.context.annotation.Import
 import org.springframework.stereotype.Component
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -204,6 +205,7 @@ class OrderSaga : AbstractSaga<OrderSaga>() {
 @SpringBootApplication(
     exclude = [org.springframework.boot.autoconfigure.r2dbc.R2dbcAutoConfiguration::class]
 )
+@Import(FlowxConfiguration::class)
 class DemoApplication(private val registry: SagaRegistry) {
 
     @PostConstruct
