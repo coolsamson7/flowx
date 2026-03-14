@@ -3,5 +3,7 @@ plugins {
 }
 rootProject.name = "flowx"
 
-include("core")
-include("demo")
+include("common")
+include("flowx:core")
+include("flowx:demo")
+include("flowx:redis")

@@ -17,9 +17,6 @@ dependencies {
     // Jackson
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
 
-    // Redis (optional — only needed for RedisSagaLock / RedisTimeoutQueue)
-    implementation("org.springframework.boot:spring-boot-starter-data-redis")
-
     testImplementation("io.mockk:mockk:1.13.10")
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
