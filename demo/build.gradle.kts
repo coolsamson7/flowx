@@ -11,6 +11,10 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter")
     //implementation("org.jetbrains.kotlin:kotlin-reflect")
 
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core")
+
+    runtimeOnly("com.h2database:h2")  // ← add this
+
     testImplementation("org.springframework.boot:spring-boot-starter-test")
 }
 repositories {
