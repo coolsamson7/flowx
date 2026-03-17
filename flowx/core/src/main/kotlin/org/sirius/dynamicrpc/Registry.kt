@@ -83,28 +83,22 @@ object Registry {
                 name = serviceName,
                 methods = service.methods.map { (methodName, method) ->
                     MethodInfo(
-                        name = methodName,
+                        name         = methodName,
                         requestType  = method.requestType.name,
                         responseType = method.responseType.name
                     )
                 }
             )
         }
-
         val typeInfos = types.map { (typeName, descriptor) ->
             TypeInfo(
                 name   = typeName,
                 fields = descriptor.fields.map { field ->
-                    FieldInfo(name = field.name, type = field.type.name)
+                    FieldInfo(name = field.name, type = field.typeName())  // ← extension fn
                 }
             )
         }
-
-        return NodeInfo(
-            url      = nodeUrl,
-            services = serviceInfos,
-            types    = typeInfos
-        )
+        return NodeInfo(url = nodeUrl, services = serviceInfos, types = typeInfos)
     }
 
     private fun descriptorFromBase64(base64: String, typeName: String): Descriptors.Descriptor {
