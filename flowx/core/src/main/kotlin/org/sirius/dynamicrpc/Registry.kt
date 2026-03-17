@@ -52,6 +52,70 @@ object Registry {
         }
     }
 
+    /**
+     * Reconstruct and register descriptors for a remote method received from the central registry.
+     * Called when a node fetches other nodes' services on startup.
+     */
+    fun hydrateMethods(methodInfo: RemoteMethodInfo) {
+        if (getTypes()[methodInfo.requestTypeName] == null) {
+            val descriptor = descriptorFromBase64(
+                methodInfo.requestDescriptorProto,
+                methodInfo.requestTypeName
+            )
+            registerType(methodInfo.requestTypeName, descriptor)
+        }
+        if (getTypes()[methodInfo.responseTypeName] == null) {
+            val descriptor = descriptorFromBase64(
+                methodInfo.responseDescriptorProto,
+                methodInfo.responseTypeName
+            )
+            registerType(methodInfo.responseTypeName, descriptor)
+        }
+    }
+
+    /**
+     * Build a NodeInfo snapshot of everything registered locally on this node.
+     * Used when registering with the central registry.
+     */
+    fun buildNodeInfo(nodeUrl: String): NodeInfo {
+        val serviceInfos = localServices.map { (serviceName, service) ->
+            ServiceInfo(
+                name = serviceName,
+                methods = service.methods.map { (methodName, method) ->
+                    MethodInfo(
+                        name = methodName,
+                        requestType  = method.requestType.name,
+                        responseType = method.responseType.name
+                    )
+                }
+            )
+        }
+
+        val typeInfos = types.map { (typeName, descriptor) ->
+            TypeInfo(
+                name   = typeName,
+                fields = descriptor.fields.map { field ->
+                    FieldInfo(name = field.name, type = field.type.name)
+                }
+            )
+        }
+
+        return NodeInfo(
+            url      = nodeUrl,
+            services = serviceInfos,
+            types    = typeInfos
+        )
+    }
+
+    private fun descriptorFromBase64(base64: String, typeName: String): Descriptors.Descriptor {
+        val fileProto = com.google.protobuf.DescriptorProtos.FileDescriptorProto.parseFrom(
+            java.util.Base64.getDecoder().decode(base64)
+        )
+        val fileDescriptor = Descriptors.FileDescriptor.buildFrom(fileProto, arrayOf())
+        return fileDescriptor.findMessageTypeByName(typeName)
+            ?: error("Type '$typeName' not found in descriptor")
+    }
+
     fun getLocalService(name: String): Service? = localServices[name]
     fun getRemoteService(name: String): RemoteServiceInfo? = remoteServices[name]
     fun getAllLocalServices(): Map<String, Service> = localServices
