@@ -13,3 +13,7 @@ annotation class RpcService(val name: String = "")
 @Target(AnnotationTarget.FUNCTION)
 @Retention(AnnotationRetention.RUNTIME)
 annotation class RpcMethod(val name: String = "")
+
+@Target(AnnotationTarget.CLASS)
+@Retention(AnnotationRetention.RUNTIME)
+annotation class RpcType

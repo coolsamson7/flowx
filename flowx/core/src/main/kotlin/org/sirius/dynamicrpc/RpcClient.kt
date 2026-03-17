@@ -1,14 +1,19 @@
 package org.sirius.dynamicrpc
 
+import com.google.protobuf.DescriptorProtos
+import com.google.protobuf.Descriptors
 import com.google.protobuf.DynamicMessage
 import io.ktor.client.*
 import io.ktor.client.call.*
 import io.ktor.client.engine.cio.*
-import io.ktor.client.plugins.contentnegotiation.*
+import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.coroutines.runBlocking
+import java.util.Base64
+import kotlin.reflect.full.findAnnotation
+import kotlin.reflect.full.memberProperties
 
 class RpcClient(private val registryUrl: String = "http://localhost:9000") {
 
@@ -24,9 +29,34 @@ class RpcClient(private val registryUrl: String = "http://localhost:9000") {
         runBlocking { fetchRegistry() }
     }
 
-    fun service(name: String) = apply { serviceName = name }
-    fun method(name: String)  = apply { methodName  = name }
-    fun param(name: String, value: Any?) = apply { params = params + (name to value) }
+    fun service(name: String) = apply {
+        serviceName = name
+        params = emptyMap()  // reset params on each new service call
+    }
+
+    fun method(name: String) = apply { methodName = name }
+
+    // Primitive or already-known value
+    fun param(name: String, value: Any?) = apply {
+        params = params + (name to value)
+    }
+
+    // Single @RpcType — flatten all properties to top-level fields
+    fun param(value: Any) = apply {
+        val kClass = value::class
+        if (kClass.findAnnotation<RpcType>() != null) {
+            kClass.memberProperties.forEach { prop ->
+                params = params + (prop.name to prop.getter.call(value))
+            }
+        } else {
+            error("param(value) only supports @RpcType classes, got ${kClass.simpleName}")
+        }
+    }
+
+    // Named compound param — kept as object, recursed in buildDynamicMessage
+    fun param(name: String, value: Any, nested: Boolean) = apply {
+        params = params + (name to value)
+    }
 
     suspend fun fetchRegistry() {
         val services: List<RemoteServiceInfo> = client.get("$registryUrl/services").body()
@@ -34,11 +64,10 @@ class RpcClient(private val registryUrl: String = "http://localhost:9000") {
             svc.methods.forEach { Registry.hydrateMethods(it) }
         }
         Registry.registerRemoteServices(services)
-        println("[RpcClient] Discovered ${services.size} service(s) from registry.")
     }
 
     suspend fun invoke(): DynamicMessage {
-        // Local shortcut — if this process also hosts services
+        // Local shortcut
         val localService = Registry.getLocalService(serviceName)
         if (localService != null) {
             val method = localService.methods[methodName]
@@ -47,7 +76,7 @@ class RpcClient(private val registryUrl: String = "http://localhost:9000") {
             return method.handler(request)
         }
 
-        // Remote — look up which node owns this service
+        // Remote invocation
         val remote = Registry.getRemoteService(serviceName)
             ?: error("Service '$serviceName' not found in registry")
         val methodInfo = remote.methods.find { it.name == methodName }

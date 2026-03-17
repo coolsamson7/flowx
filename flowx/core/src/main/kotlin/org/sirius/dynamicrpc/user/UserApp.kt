@@ -1,5 +1,6 @@
 package org.sirius.dynamicrpc.user
 
+import org.sirius.dynamicrpc.RpcType
 import org.sirius.dynamicrpc.ServiceNode
 import org.springframework.boot.autoconfigure.SpringBootApplication
 import org.springframework.stereotype.Component
@@ -7,6 +8,7 @@ import org.springframework.stereotype.Component
 @SpringBootApplication
 class UserApp
 
+@RpcType
 data class User(val id: Int, val name: String)
 
 @Component

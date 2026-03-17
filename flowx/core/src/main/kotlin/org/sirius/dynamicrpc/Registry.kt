@@ -28,8 +28,12 @@ object Registry {
     private val remoteServices = mutableMapOf<String, RemoteServiceInfo>()
     private val types          = mutableMapOf<String, Descriptors.Descriptor>()
 
+    // --- Type registration ---
+
     fun registerType(name: String, descriptor: Descriptors.Descriptor) { types[name] = descriptor }
     fun getTypes(): Map<String, Descriptors.Descriptor> = types
+
+    // --- Service registration ---
 
     fun registerLocalService(service: Service, url: String? = null) {
         localServices[service.name] = service
@@ -52,31 +56,17 @@ object Registry {
         }
     }
 
-    /**
-     * Reconstruct and register descriptors for a remote method received from the central registry.
-     * Called when a node fetches other nodes' services on startup.
-     */
-    fun hydrateMethods(methodInfo: RemoteMethodInfo) {
-        if (getTypes()[methodInfo.requestTypeName] == null) {
-            val descriptor = descriptorFromBase64(
-                methodInfo.requestDescriptorProto,
-                methodInfo.requestTypeName
-            )
-            registerType(methodInfo.requestTypeName, descriptor)
-        }
-        if (getTypes()[methodInfo.responseTypeName] == null) {
-            val descriptor = descriptorFromBase64(
-                methodInfo.responseDescriptorProto,
-                methodInfo.responseTypeName
-            )
-            registerType(methodInfo.responseTypeName, descriptor)
-        }
+    fun getLocalService(name: String): Service? = localServices[name]
+    fun getRemoteService(name: String): RemoteServiceInfo? = remoteServices[name]
+    fun getAllLocalServices(): Map<String, Service> = localServices
+    fun getAllRemoteServices(): Map<String, RemoteServiceInfo> = remoteServices
+
+    fun registerRemoteServices(services: List<RemoteServiceInfo>) {
+        services.forEach { remoteServices[it.name] = it }
     }
 
-    /**
-     * Build a NodeInfo snapshot of everything registered locally on this node.
-     * Used when registering with the central registry.
-     */
+    // --- NodeInfo snapshot ---
+
     fun buildNodeInfo(nodeUrl: String): NodeInfo {
         val serviceInfos = localServices.map { (serviceName, service) ->
             ServiceInfo(
@@ -94,15 +84,32 @@ object Registry {
             TypeInfo(
                 name   = typeName,
                 fields = descriptor.fields.map { field ->
-                    FieldInfo(name = field.name, type = field.typeName())  // ← extension fn
+                    FieldInfo(name = field.name, type = field.typeName())
                 }
             )
         }
         return NodeInfo(url = nodeUrl, services = serviceInfos, types = typeInfos)
     }
 
-    private fun descriptorFromBase64(base64: String, typeName: String): Descriptors.Descriptor {
-        val fileProto = com.google.protobuf.DescriptorProtos.FileDescriptorProto.parseFrom(
+    // --- Remote descriptor hydration ---
+
+    fun hydrateMethods(methodInfo: RemoteMethodInfo) {
+        if (getTypes()[methodInfo.requestTypeName] == null) {
+            registerType(
+                methodInfo.requestTypeName,
+                descriptorFromBase64(methodInfo.requestDescriptorProto, methodInfo.requestTypeName)
+            )
+        }
+        if (getTypes()[methodInfo.responseTypeName] == null) {
+            registerType(
+                methodInfo.responseTypeName,
+                descriptorFromBase64(methodInfo.responseDescriptorProto, methodInfo.responseTypeName)
+            )
+        }
+    }
+
+    fun descriptorFromBase64(base64: String, typeName: String): Descriptors.Descriptor {
+        val fileProto = DescriptorProtos.FileDescriptorProto.parseFrom(
             java.util.Base64.getDecoder().decode(base64)
         )
         val fileDescriptor = Descriptors.FileDescriptor.buildFrom(fileProto, arrayOf())
@@ -110,16 +117,7 @@ object Registry {
             ?: error("Type '$typeName' not found in descriptor")
     }
 
-    fun getLocalService(name: String): Service? = localServices[name]
-    fun getRemoteService(name: String): RemoteServiceInfo? = remoteServices[name]
-    fun getAllLocalServices(): Map<String, Service> = localServices
-    fun getAllRemoteServices(): Map<String, RemoteServiceInfo> = remoteServices
-
-    fun registerRemoteServices(services: List<RemoteServiceInfo>) {
-        services.forEach { remoteServices[it.name] = it }
-    }
-
-    // --- Descriptor helpers ---
+    // --- Descriptor builders ---
 
     private val SCALAR_TYPES = setOf(
         Int::class, Long::class, String::class, Boolean::class, Double::class, Float::class
@@ -134,7 +132,6 @@ object Registry {
         else           -> DescriptorProtos.FieldDescriptorProto.Type.TYPE_STRING
     }
 
-    /** Build a descriptor from explicit (name, type) pairs — used for request messages. */
     private fun buildDescriptorFromFields(
         messageName: String,
         fields: List<Pair<String, KClass<*>>>
@@ -159,46 +156,79 @@ object Registry {
         return descriptor
     }
 
-    /**
-     * Build a request descriptor from KParameters (the actual method params, minus 'this').
-     * Each parameter becomes a named field with the correct proto type.
-     */
+    private fun ensureRpcTypeRegistered(kClass: KClass<*>): Descriptors.Descriptor? {
+        if (kClass.findAnnotation<RpcType>() == null) return null
+        val typeName = kClass.simpleName ?: return null
+        getTypes()[typeName]?.let { return it }
+        val fields = kClass.memberProperties.map { prop ->
+            val kc = prop.returnType.classifier as? KClass<*> ?: String::class
+            prop.name to kc
+        }
+        return buildDescriptorFromFields(typeName, fields)
+    }
+
     private fun buildRequestDescriptor(messageName: String, params: List<KParameter>): Descriptors.Descriptor {
-        val fields = params.map { param ->
-            val kClass = param.type.classifier as? KClass<*> ?: String::class
-            (param.name ?: "arg${param.index}") to kClass
-        }
-        return buildDescriptorFromFields(messageName, fields)
-    }
-
-    /**
-     * Build a response descriptor.
-     * - Data classes: use their member properties (e.g. User → {id: INT32, name: STRING})
-     * - Scalars/String: wrap in a single-field message named "value"
-     */
-    private fun buildResponseDescriptor(messageName: String, returnClass: KClass<*>): Descriptors.Descriptor {
-        return if (returnClass in SCALAR_TYPES) {
-            buildDescriptorFromFields(messageName, listOf("value" to returnClass))
-        } else {
-            // Register the return type itself first
-            val returnTypeName = returnClass.simpleName!!
-            if (Registry.getTypes()[returnTypeName] == null) {
-                val fields = returnClass.memberProperties.map { prop ->
-                    val kClass = prop.returnType.classifier as? KClass<*> ?: String::class
-                    prop.name to kClass
-                }
-                buildDescriptorFromFields(returnTypeName, fields)  // registers "User"
+        // Single @RpcType param — use its descriptor directly
+        if (params.size == 1) {
+            val kClass = params[0].type.classifier as? KClass<*>
+            if (kClass != null) {
+                ensureRpcTypeRegistered(kClass)?.let { return it }
             }
-            // Response wrapper just re-uses the same descriptor
-            Registry.getTypes()[returnTypeName]!!
+        }
+
+        // Mixed or multi-param — build wrapper
+        // @RpcType params become MESSAGE fields referencing their own descriptor
+        val msgBuilder = DescriptorProtos.DescriptorProto.newBuilder().setName(messageName)
+        val dependentFiles = mutableListOf<Descriptors.FileDescriptor>()
+
+        params.forEachIndexed { index, param ->
+            val kClass = param.type.classifier as? KClass<*> ?: String::class
+            val rpcTypeDescriptor = ensureRpcTypeRegistered(kClass)
+
+            val fieldBuilder = DescriptorProtos.FieldDescriptorProto.newBuilder()
+                .setName(param.name ?: "arg${param.index}")
+                .setNumber(index + 1)
+
+            if (rpcTypeDescriptor != null) {
+                fieldBuilder
+                    .setType(DescriptorProtos.FieldDescriptorProto.Type.TYPE_MESSAGE)
+                    .setTypeName(rpcTypeDescriptor.name)
+                dependentFiles.add(rpcTypeDescriptor.file)
+            } else {
+                fieldBuilder.setType(protoFieldType(kClass))
+            }
+            msgBuilder.addField(fieldBuilder.build())
+        }
+
+        val fileProto = DescriptorProtos.FileDescriptorProto.newBuilder()
+            .setName("$messageName.proto")
+            .addMessageType(msgBuilder)
+            .build()
+        val fileDescriptor = Descriptors.FileDescriptor.buildFrom(
+            fileProto,
+            dependentFiles.toTypedArray()   // pass dependent descriptors so MESSAGE refs resolve
+        )
+        val descriptor = fileDescriptor.findMessageTypeByName(messageName)
+        registerType(messageName, descriptor)
+        return descriptor
+    }
+
+    private fun buildResponseDescriptor(messageName: String, returnClass: KClass<*>): Descriptors.Descriptor {
+        return when {
+            returnClass in SCALAR_TYPES ->
+                buildDescriptorFromFields(messageName, listOf("value" to returnClass))
+            else ->
+                ensureRpcTypeRegistered(returnClass)
+                    ?: run {
+                        val fields = returnClass.memberProperties.map { prop ->
+                            val kc = prop.returnType.classifier as? KClass<*> ?: String::class
+                            prop.name to kc
+                        }
+                        buildDescriptorFromFields(messageName, fields)
+                    }
         }
     }
 
-    /**
-     * Coerce a value extracted from DynamicMessage to the Kotlin type expected by the function.
-     * Protobuf returns the correct JVM boxed types for scalar fields, but we need to be explicit
-     * for Int since proto returns java.lang.Integer which Kotlin reflection expects as kotlin.Int.
-     */
     private fun coerceArg(value: Any?, targetClass: KClass<*>): Any? {
         if (value == null) return null
         return when (targetClass) {
@@ -212,11 +242,6 @@ object Registry {
         }
     }
 
-    /**
-     * Build the field map to construct the response DynamicMessage.
-     * - Data classes: reflect over their properties to get values
-     * - Scalars/String: put result under the "value" field
-     */
     private fun buildResponseFieldMap(
         responseType: Descriptors.Descriptor,
         returnClass: KClass<*>,
@@ -232,12 +257,13 @@ object Registry {
         }
     }
 
+    // --- Spring context scan ---
+
     fun scanAndRegister(context: ApplicationContext, url: String? = null) {
         val beans = context.getBeansWithAnnotation(RpcService::class.java)
         beans.forEach { (_, bean) ->
             val clazz = bean::class
 
-            // Find the @RpcService-annotated interface, fall back to the class itself
             val (serviceAnnotation, annotatedKClass) = clazz.java.interfaces
                 .mapNotNull { iface ->
                     val ann = iface.kotlin.findAnnotation<RpcService>()
@@ -249,32 +275,37 @@ object Registry {
             val serviceName = serviceAnnotation.name.ifEmpty { annotatedKClass.simpleName!! }
             val service = Service(serviceName)
 
-            // Scan @RpcMethod from the INTERFACE, not the impl
+            // Scan @RpcMethod from the interface, call the impl
             annotatedKClass.memberFunctions.forEach { ifaceFunc ->
                 val rpcAnno = ifaceFunc.findAnnotation<RpcMethod>() ?: return@forEach
                 val methodName = rpcAnno.name.ifEmpty { ifaceFunc.name }
 
-                // Find the matching impl function on the bean to actually call
                 val implFunc = clazz.declaredFunctions.find { it.name == ifaceFunc.name }
-                    ?: error("No implementation found for '${ifaceFunc.name}' in ${clazz.simpleName}")
+                    ?: error("No implementation for '${ifaceFunc.name}' in ${clazz.simpleName}")
 
-                val funcParams = ifaceFunc.parameters.drop(1)  // param names from interface (guaranteed present)
+                val funcParams  = ifaceFunc.parameters.drop(1)
                 val returnClass = ifaceFunc.returnType.classifier as? KClass<*> ?: Any::class
 
                 val requestType  = buildRequestDescriptor("${methodName}Request", funcParams)
                 val responseType = buildResponseDescriptor("${methodName}Response", returnClass)
 
                 service.methods[methodName] = ServiceMethod(
-                    name = methodName,
-                    requestType = requestType,
+                    name         = methodName,
+                    requestType  = requestType,
                     responseType = responseType,
                     handler = { request ->
                         val args = funcParams.map { param ->
                             val field = requestType.findFieldByName(param.name!!)
                                 ?: error("No field '${param.name}' in request for '$methodName'")
-                            coerceArg(request.getField(field), param.type.classifier as KClass<*>)
+                            val raw = request.getField(field)
+                            // For MESSAGE fields, reconstruct the @RpcType object
+                            val kClass = param.type.classifier as KClass<*>
+                            if (raw is DynamicMessage) {
+                                reconstructRpcType(raw, kClass)
+                            } else {
+                                coerceArg(raw, kClass)
+                            }
                         }
-                        // Call the IMPL function on the bean
                         val result = implFunc.call(bean, *args.toTypedArray())
                         val fieldMap = buildResponseFieldMap(responseType, returnClass, result)
                         DynamicProtoGenerator.buildDynamicMessage(responseType, fieldMap)
@@ -283,5 +314,18 @@ object Registry {
             }
             registerLocalService(service, url)
         }
+    }
+
+    /**
+     * Reconstruct an @RpcType instance from a DynamicMessage using its primary constructor.
+     */
+    private fun reconstructRpcType(message: DynamicMessage, kClass: KClass<*>): Any {
+        val constructor = kClass.constructors.first()
+        val args = constructor.parameters.map { param ->
+            val field = message.descriptorForType.findFieldByName(param.name!!)
+                ?: error("No field '${param.name}' in message for ${kClass.simpleName}")
+            coerceArg(message.getField(field), param.type.classifier as KClass<*>)
+        }
+        return constructor.call(*args.toTypedArray())
     }
 }
