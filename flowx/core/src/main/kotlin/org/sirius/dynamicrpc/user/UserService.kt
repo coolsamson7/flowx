@@ -1,10 +1,7 @@
-package org.sirius.dynamicrpc
+package org.sirius.dynamicrpc.user
 
-/*
- * @COPYRIGHT (C) 2023 Andreas Ernst
- *
- * All rights reserved
- */
+import org.sirius.dynamicrpc.RpcMethod
+import org.sirius.dynamicrpc.RpcService
 
 @RpcService
 interface UserService {
