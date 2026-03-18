@@ -400,13 +400,18 @@ class SagaEngineTest {
 
     @Test
     fun `saga restores from storage and completes on next event`() = runBlocking {
-        // Assign real ID so storage key is stable
         val saga   = factory.create(AsyncSaga::class.java) { id = UUID.randomUUID().toString() }
         val sagaId = engine.start(saga).id
 
-        // Wait until "before" step completes — "async" step will then be AWAITING_EVENT
+        // Wait for "before" step — handle IllegalStateException while saga not yet persisted
         withTimeout(3_000) {
-            while (storage.load(sagaId, factory).stepState["before"]?.status != StepStatus.SUCCESS) {
+            while (true) {
+                try {
+                    val status = storage.load(sagaId, factory).stepState["before"]?.status
+                    if (status == StepStatus.SUCCESS) break
+                } catch (_: IllegalStateException) {
+                    // Not persisted yet — retry
+                }
                 delay(20)
             }
         }
@@ -421,7 +426,7 @@ class SagaEngineTest {
             eventStore = eventStore
         )
         engine2.initialize()
-        delay(300)  // let restoreActiveSagas() finish on Dispatchers.IO
+        delay(300)
 
         engine2.dispatch(sagaId, OkEvent(sagaId = sagaId, value = "restored"))
 

@@ -291,15 +291,12 @@ class SagaEngine(
                 return@launch
             }
 
-            val runtime = fromCache(sagaId)
-            if (runtime != null) {
-                val hasAwaiting = runtime.instance.typedNodes()
-                    .any { runtime.stepState[it.id]?.status == StepStatus.AWAITING_EVENT }
-                if (hasAwaiting) {
-                    sagaLock.withLock(sagaId) {
-                        drainPendingEvents(sagaId)
-                    }
-                }
+            // Wait for the lock — event delivery must not be skipped.
+            // If executeNode currently holds the lock, we wait until it finishes,
+            // then drain. drainPendingEvents handles the case where no step is
+            // AWAITING_EVENT yet (event stays PENDING, inline drain picks it up).
+            sagaLock.withLockWaiting(sagaId) {
+                drainPendingEvents(sagaId)
             }
         }
     }
