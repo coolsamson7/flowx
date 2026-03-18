@@ -16,7 +16,6 @@ class SagaEngine(
     private val factory: SagaFactory,
     private val registry: SagaRegistry,
     private val sagaLock: SagaLock,
-    private val timeoutQueue: TimeoutQueue,
     private val eventStore: SagaEventStore
 ) : DisposableBean, EventSink {
 
@@ -27,8 +26,7 @@ class SagaEngine(
     private val cache    = ConcurrentHashMap<String, Pair<LoadedSaga<Saga<*>>, Long>>()
     private val cacheTTL = 5 * 60 * 1000L
 
-    private val instanceId = UUID.randomUUID().toString()
-    private val mapper     = jacksonObjectMapper()
+    private val mapper = jacksonObjectMapper()
 
     // --------------------------------------------------
     // Lifecycle
@@ -41,7 +39,6 @@ class SagaEngine(
 
     fun initialize() {
         scope.launch(Dispatchers.IO) { restoreActiveSagas() }
-        startTimeoutScanner()
     }
 
     override fun destroy() {
@@ -90,10 +87,15 @@ class SagaEngine(
     }
 
     fun <T : Saga<*>> start(instance: T): T {
+        val elseTargetIds = instance.typedNodes()
+            .filterIsInstance<ConditionNode<*>>()
+            .mapNotNull { it.elseTarget?.id }
+            .toSet()
+
         val stepState = mutableMapOf<String, StepState>()
         instance.typedNodes().forEach { node ->
             stepState[node.id] = StepState().apply {
-                tokenCount = if (node.predecessors.isEmpty()) 1 else 0
+                tokenCount = if (node.predecessors.isEmpty() && node.id !in elseTargetIds) 1 else 0
             }
         }
         val runtime = LoadedSaga<Saga<*>>(instance, stepState, CompletableDeferred())
@@ -107,16 +109,15 @@ class SagaEngine(
             try {
                 eventStore.store(event)
             } catch (ex: Throwable) {
-                logger.error("Failed to persist event ${event::class.simpleName} " +
-                        "for saga $sagaId", ex)
+                logger.error("Failed to persist event ${event::class.simpleName} for saga $sagaId", ex)
                 return@launch
             }
 
             val runtime = fromCache(sagaId)
             if (runtime != null) {
-                val awaitingNode = runtime.instance.typedNodes()
-                    .find { runtime.stepState[it.id]?.status == StepStatus.AWAITING_EVENT }
-                if (awaitingNode != null) drainPendingEvents(sagaId)
+                val hasAwaiting = runtime.instance.typedNodes()
+                    .any { runtime.stepState[it.id]?.status == StepStatus.AWAITING_EVENT }
+                if (hasAwaiting) drainPendingEvents(sagaId)
             }
         }
     }
@@ -131,37 +132,29 @@ class SagaEngine(
     // --------------------------------------------------
 
     suspend fun processPendingEvents() {
-        val sagaIds = cache.keys.toList()
-        for (sagaId in sagaIds) {
-            val runtime = fromCache(sagaId) ?: continue
-            val hasAwaitingStep = runtime.instance.typedNodes()
+        cache.keys.toList().forEach { sagaId ->
+            val runtime = fromCache(sagaId) ?: return@forEach
+            val hasAwaiting = runtime.instance.typedNodes()
                 .any { runtime.stepState[it.id]?.status == StepStatus.AWAITING_EVENT }
-            if (!hasAwaitingStep) continue
-            drainPendingEvents(sagaId)
+            if (hasAwaiting) drainPendingEvents(sagaId)
         }
     }
 
     fun processActiveSagas() {
-        val activeSagaIds = cache.keys.toList()
-        activeSagaIds.forEach { sagaId ->
+        cache.keys.toList().forEach { sagaId ->
             val runtime = fromCache(sagaId) ?: return@forEach
-            // Only filter — do NOT mark RUNNING here.
-            // executeNode marks RUNNING after acquiring sagaLock.
-            val readyNodes = runtime.instance.typedNodes()
-                .filter { node ->
-                    val st = runtime.stepState[node.id]!!
-                    isReady(node, st)
+            runtime.instance.typedNodes()
+                .filter { node -> isReady(node, runtime.stepState[node.id]!!) }
+                .forEach { node ->
+                    scope.launch {
+                        sagaLock.withLock(sagaId) { executeNode(sagaId, node) }
+                    }
                 }
-            readyNodes.forEach { node ->
-                scope.launch {
-                    sagaLock.withLock(sagaId) { executeNode(sagaId, node) }
-                }
-            }
         }
     }
 
     // --------------------------------------------------
-    // Restore sagas
+    // Restore
     // --------------------------------------------------
 
     private suspend fun restoreActiveSagas() {
@@ -170,10 +163,10 @@ class SagaEngine(
                 val loaded = storage.load(sagaId, factory)
                 putInCache(loaded)
 
-                val compensatingSteps =
-                    loaded.stepState.values.filter { it.status == StepStatus.COMPENSATING }
+                val compensating = loaded.stepState.values
+                    .filter { it.status == StepStatus.COMPENSATING }
 
-                if (compensatingSteps.isNotEmpty()) {
+                if (compensating.isNotEmpty()) {
                     logger.warn("Resuming mid-compensation for saga $sagaId")
                     loaded.stepState.entries
                         .filter { it.value.status == StepStatus.COMPENSATING }
@@ -184,6 +177,13 @@ class SagaEngine(
                         completeSaga(loaded, success = false)
                     }
                 } else {
+                    // Reschedule any timeouts that were active before restart
+                    loaded.stepState.entries
+                        .filter { it.value.status == StepStatus.AWAITING_EVENT
+                                && it.value.timeoutAt != null }
+                        .forEach { (stepId, state) ->
+                            scheduleTimeout(sagaId, stepId, state.timeoutAt!!)
+                        }
                     scheduleReadyNodes(sagaId)
                 }
             } catch (ex: Throwable) {
@@ -193,61 +193,48 @@ class SagaEngine(
     }
 
     // --------------------------------------------------
-    // Timeout scanner
+    // Timeout — one coroutine per timeout, no polling
     // --------------------------------------------------
 
-    private fun startTimeoutScanner() {
+    private fun scheduleTimeout(sagaId: String, stepId: String, timeoutAt: Long) {
         scope.launch {
-            while (true) {
-                delay(5_000)
-                val expired = timeoutQueue.popExpired(System.currentTimeMillis(), 100)
-                for (entry in expired) {
-                    sagaLock.withLock(entry.sagaId) {
-                        val runtime = getOrLoad(entry.sagaId) ?: return@withLock
-                        val node    = runtime.instance.typedNodes()
-                            .find { it.id == entry.stepId } ?: return@withLock
-                        val st      = runtime.stepState[node.id] ?: return@withLock
-                        if (st.status == StepStatus.AWAITING_EVENT) {
-                            logger.warn("Step '${node.id}' of saga '${entry.sagaId}' timed out")
-                            failSaga(runtime, node.id)
-                        }
-                    }
+            val delayMs = timeoutAt - System.currentTimeMillis()
+            if (delayMs > 0) delay(delayMs)
+
+            sagaLock.withLock(sagaId) {
+                val runtime = getOrLoad(sagaId) ?: return@withLock
+                val st = runtime.stepState[stepId] ?: return@withLock
+                if (st.status == StepStatus.AWAITING_EVENT) {
+                    logger.warn("Step '$stepId' of saga '$sagaId' timed out")
+                    failSaga(runtime, stepId)
                 }
+                // If status changed (event arrived before timeout) — do nothing
             }
         }
     }
 
     // --------------------------------------------------
-    // Pending-event drain
+    // Event drain — no claiming, sagaLock serialises access
     // --------------------------------------------------
 
     private suspend fun drainPendingEvents(sagaId: String) {
-        val claimed = withContext(Dispatchers.IO) {
-            try { eventStore.claimPending(sagaId, instanceId) }
+        val pending = withContext(Dispatchers.IO) {
+            try { eventStore.getPending(sagaId) }
             catch (ex: Throwable) {
-                logger.error("Failed to claim events for saga $sagaId", ex)
+                logger.error("Failed to fetch pending events for saga $sagaId", ex)
                 emptyList()
             }
         }
-        if (claimed.isEmpty()) return
+        if (pending.isEmpty()) return
 
-        val runtime = getOrLoad(sagaId)
-        if (runtime == null) {
-            withContext(Dispatchers.IO) {
-                claimed.forEach {
-                    try { eventStore.releaseClaim(it.id) }
-                    catch (ex: Throwable) { logger.warn("Failed to release claim ${it.id}", ex) }
-                }
-            }
-            return
-        }
+        val runtime = getOrLoad(sagaId) ?: return
 
-        for (claimed in claimed) {
+        for (pendingEvent in pending) {
             val event = try {
-                claimed.deserialize(mapper)
+                pendingEvent.deserialize(mapper)
             } catch (ex: Throwable) {
-                logger.error("Cannot deserialise event ${claimed.id}: ${ex.message}")
-                withContext(Dispatchers.IO) { eventStore.markFailed(claimed.id, ex.message) }
+                logger.error("Cannot deserialise event ${pendingEvent.id}: ${ex.message}")
+                withContext(Dispatchers.IO) { eventStore.markFailed(pendingEvent.id, ex.message) }
                 continue
             }
 
@@ -255,13 +242,12 @@ class SagaEngine(
                 .find { runtime.stepState[it.id]?.status == StepStatus.AWAITING_EVENT }
 
             if (node == null) {
-                withContext(Dispatchers.IO) { eventStore.releaseClaim(claimed.id) }
+                // No step waiting yet — leave as PENDING, runner will retry
                 continue
             }
 
             if (!node.handlers.containsKey(event::class.java)) {
                 logger.warn("No handler on node '${node.id}' for ${event::class.simpleName}")
-                withContext(Dispatchers.IO) { eventStore.releaseClaim(claimed.id) }
                 continue
             }
 
@@ -269,9 +255,9 @@ class SagaEngine(
                 sagaLock.withLock(sagaId) {
                     deliverEvent(event, node, runtime)
                     withContext(Dispatchers.IO) {
-                        try { eventStore.markProcessed(claimed.id) }
+                        try { eventStore.markProcessed(pendingEvent.id) }
                         catch (ex: Throwable) {
-                            logger.warn("Failed to mark event ${claimed.id} as processed", ex)
+                            logger.warn("Failed to mark event ${pendingEvent.id} as processed", ex)
                         }
                     }
                 }
@@ -317,7 +303,7 @@ class SagaEngine(
     }
 
     // --------------------------------------------------
-    // Completion + cache eviction
+    // Completion
     // --------------------------------------------------
 
     private fun completeSaga(runtime: LoadedSaga<Saga<*>>, success: Boolean) {
@@ -342,11 +328,7 @@ class SagaEngine(
         scope.launch {
             val readyNodes = runtime.mutex.withLock {
                 runtime.instance.typedNodes()
-                    .filter { node ->
-                        val st = runtime.stepState[node.id]!!
-                        isReady(node, st)
-                    }
-                // No RUNNING marking here — executeNode does it after sagaLock
+                    .filter { node -> isReady(node, runtime.stepState[node.id]!!) }
             }
             readyNodes.forEach { node ->
                 scope.launch {
@@ -363,15 +345,12 @@ class SagaEngine(
     private suspend fun <T : Saga<*>> executeNode(sagaId: String, node: Node<T>): Boolean {
         val runtime = getOrLoad(sagaId) ?: return false
 
-        // Atomically check + claim the node under mutex.
-        // Another coroutine scheduled for the same node (e.g. runner loop
-        // firing concurrently with scheduleReadyNodes) will find RUNNING and bail.
         val alreadyClaimed = runtime.mutex.withLock {
             val st = runtime.stepState[node.id]!!
             if (st.status != StepStatus.PENDING) {
-                true    // someone else got here first
+                true
             } else {
-                st.status = StepStatus.RUNNING   // claim it
+                st.status = StepStatus.RUNNING
                 false
             }
         }
@@ -402,7 +381,7 @@ class SagaEngine(
                 completeNode(sagaId, node)
             } else {
                 val target = condNode.elseTarget
-                    ?: error("ConditionNode '${node.id}' has no elseTarget — DSL wiring bug")
+                    ?: error("ConditionNode '${node.id}' has no elseTarget")
 
                 runtime.mutex.withLock {
                     runtime.stepState[node.id]!!.status = StepStatus.SKIPPED
@@ -410,8 +389,7 @@ class SagaEngine(
                     persist(runtime)
                 }
 
-                val targetSt = runtime.stepState[target.id]!!
-                if (isReady(target, targetSt)) {
+                if (isReady(target, runtime.stepState[target.id]!!)) {
                     scope.launch {
                         sagaLock.withLock(sagaId) { executeNode(sagaId, target) }
                     }
@@ -434,12 +412,13 @@ class SagaEngine(
         if (node.isAsync) {
             val timeoutAt = node.timeoutMillis?.let { System.currentTimeMillis() + it }
             runtime.mutex.withLock {
-                val st = runtime.stepState[node.id]!!
+                val st       = runtime.stepState[node.id]!!
                 st.status    = StepStatus.AWAITING_EVENT
                 st.timeoutAt = timeoutAt
                 persist(runtime)
             }
-            if (timeoutAt != null) timeoutQueue.scheduleTimeout(sagaId, node.id, timeoutAt)
+            // Schedule exact-time timeout coroutine — no polling
+            if (timeoutAt != null) scheduleTimeout(sagaId, node.id, timeoutAt)
             drainPendingEvents(sagaId)
         } else {
             completeNode(sagaId, node)
@@ -472,13 +451,8 @@ class SagaEngine(
                 }
                 persist(runtime)
 
-                // Collect ready nodes — do NOT mark RUNNING here.
-                // executeNode marks RUNNING after acquiring sagaLock.
                 runtime.instance.typedNodes()
-                    .filter { n ->
-                        val st = runtime.stepState[n.id]!!
-                        isReady(n, st)
-                    }
+                    .filter { n -> isReady(n, runtime.stepState[n.id]!!) }
             }
 
             if (runtime.instance.typedNodes()

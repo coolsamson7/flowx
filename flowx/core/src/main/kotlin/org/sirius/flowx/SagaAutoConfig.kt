@@ -17,9 +17,6 @@ class SagaAutoConfiguration {
     @ConditionalOnMissingBean(SagaLock::class)
     @Bean fun sagaLock() = LocalSagaLock()
 
-    @ConditionalOnMissingBean(TimeoutQueue::class)
-    @Bean fun timeoutQueue() = LocalTimeoutQueue()
-
     // JPA storage — default when JPA repos are on the classpath
     @Bean
     @ConditionalOnMissingBean(SagaStorage::class)
