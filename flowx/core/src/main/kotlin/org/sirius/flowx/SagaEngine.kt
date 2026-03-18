@@ -105,24 +105,6 @@ class SagaEngine(
         return instance
     }
 
-    override fun dispatch(sagaId: String, event: Event) {
-        scope.launch(Dispatchers.IO) {
-            try {
-                eventStore.store(event)
-            } catch (ex: Throwable) {
-                logger.error("Failed to persist event ${event::class.simpleName} for saga $sagaId", ex)
-                return@launch
-            }
-
-            val runtime = fromCache(sagaId)
-            if (runtime != null) {
-                val hasAwaiting = runtime.instance.typedNodes()
-                    .any { runtime.stepState[it.id]?.status == StepStatus.AWAITING_EVENT }
-                if (hasAwaiting) drainPendingEvents(sagaId)
-            }
-        }
-    }
-
     fun onComplete(sagaId: String, callback: (Boolean) -> Unit) {
         val runtime = fromCache(sagaId) ?: return
         scope.launch { callback(runtime.completion.await()) }
@@ -257,7 +239,6 @@ class SagaEngine(
     // --------------------------------------------------
     // Event drain — sagaLock serialises, no DB-level locking needed
     // --------------------------------------------------
-
     private suspend fun drainPendingEvents(sagaId: String) {
         val pending = withContext(Dispatchers.IO) {
             try { eventStore.getPending(sagaId) }
@@ -282,24 +263,41 @@ class SagaEngine(
             val node = runtime.instance.typedNodes()
                 .find { runtime.stepState[it.id]?.status == StepStatus.AWAITING_EVENT }
 
-            if (node == null) {
-                // No step waiting yet — leave PENDING, recoverPendingEvents will retry
-                continue
-            }
+            if (node == null) continue
 
             if (!node.handlers.containsKey(event::class.java)) {
                 logger.warn("No handler on node '${node.id}' for ${event::class.simpleName}")
                 continue
             }
 
-            scope.launch {
-                sagaLock.withLock(sagaId) {
-                    deliverEvent(event, node, runtime)
-                    withContext(Dispatchers.IO) {
-                        try { eventStore.markProcessed(pendingEvent.id) }
-                        catch (ex: Throwable) {
-                            logger.warn("Failed to mark event ${pendingEvent.id} processed", ex)
-                        }
+            // Deliver inline — caller already holds sagaLock
+            deliverEvent(event, node, runtime)
+            withContext(Dispatchers.IO) {
+                try { eventStore.markProcessed(pendingEvent.id) }
+                catch (ex: Throwable) {
+                    logger.warn("Failed to mark event ${pendingEvent.id} processed", ex)
+                }
+            }
+        }
+    }
+
+    // dispatch — wrap drainPendingEvents in sagaLock so delivery is serialised
+    override fun dispatch(sagaId: String, event: Event) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                eventStore.store(event)
+            } catch (ex: Throwable) {
+                logger.error("Failed to persist event ${event::class.simpleName} for saga $sagaId", ex)
+                return@launch
+            }
+
+            val runtime = fromCache(sagaId)
+            if (runtime != null) {
+                val hasAwaiting = runtime.instance.typedNodes()
+                    .any { runtime.stepState[it.id]?.status == StepStatus.AWAITING_EVENT }
+                if (hasAwaiting) {
+                    sagaLock.withLock(sagaId) {
+                        drainPendingEvents(sagaId)
                     }
                 }
             }

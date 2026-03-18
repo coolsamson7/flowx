@@ -108,13 +108,15 @@ interface SagaEntityRepository : JpaRepository<SagaEntity, String> {
      * are recovered first.
      */
     @Query("""
-        SELECT DISTINCT s.id FROM SagaEntity s
-          JOIN SagaEventEntity e ON e.sagaId = s.id
-         WHERE s.status = 'RUNNING'
-           AND e.status = 'PENDING'
-         ORDER BY e.createdAt ASC
-         LIMIT :limit
-    """)
+    SELECT s.id FROM SagaEntity s
+     WHERE s.status = 'RUNNING'
+       AND s.id IN (
+           SELECT e.sagaId FROM SagaEventEntity e
+            WHERE e.status = 'PENDING'
+       )
+     ORDER BY s.lastProcessedAt ASC NULLS FIRST
+     LIMIT :limit
+""")
     fun findAwaitingWithPendingEvents(@Param("limit") limit: Int): List<String>
 }
 
