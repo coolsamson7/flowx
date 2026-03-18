@@ -5,10 +5,11 @@ import jakarta.persistence.*
 import org.sirius.flowx.*
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.data.jpa.repository.Query
+import org.springframework.data.repository.query.Param
 import org.springframework.transaction.annotation.Transactional
 import java.time.Instant
 
-// -------------------- ENTITIES --------------------
+// ── Entities ──────────────────────────────────────────────────────────────────
 
 @Entity
 @Table(name = "saga")
@@ -31,11 +32,20 @@ class SagaEntity(
     @Column(nullable = false)
     var updatedAt: Instant = Instant.now(),
 
+    /**
+     * Stamped on every persist() call.
+     * Used by recoverStuckSagas() to prioritise sagas that haven't been
+     * touched the longest — naturally floats orphans and starved sagas to
+     * the top of the recovery scan. NULL = never processed, highest priority.
+     */
+    @Column(name = "last_processed_at")
+    var lastProcessedAt: Instant? = null,
+
     @OneToMany(
-        mappedBy = "saga",
-        cascade = [CascadeType.ALL],
+        mappedBy      = "saga",
+        cascade       = [CascadeType.ALL],
         orphanRemoval = true,
-        fetch = FetchType.EAGER
+        fetch         = FetchType.EAGER
     )
     val steps: MutableList<SagaStepEntity> = mutableListOf()
 )
@@ -70,22 +80,50 @@ data class SagaStepId(
     val stepId: String = ""
 ) : java.io.Serializable
 
-// -------------------- REPOSITORIES --------------------
+// ── Repositories ──────────────────────────────────────────────────────────────
 
 interface SagaEntityRepository : JpaRepository<SagaEntity, String> {
+
     @Query("SELECT s.id FROM SagaEntity s WHERE s.status IN ('RUNNING', 'COMPENSATING')")
     fun findActiveIds(): List<String>
+
+    /**
+     * Active sagas sorted by lastProcessedAt ASC NULLS FIRST.
+     * Sagas never touched (NULL) or touched longest ago come first —
+     * naturally prioritises orphans from crashed nodes and starved sagas.
+     * Excludes AWAITING_EVENT — those are handled by findAwaitingWithPendingEvents.
+     */
+    @Query("""
+        SELECT s.id FROM SagaEntity s
+         WHERE s.status IN ('RUNNING', 'COMPENSATING')
+         ORDER BY s.lastProcessedAt ASC NULLS FIRST
+         LIMIT :limit
+    """)
+    fun findLeastRecentlyProcessed(@Param("limit") limit: Int): List<String>
+
+    /**
+     * AWAITING_EVENT sagas that have PENDING events sitting in the event store.
+     * These represent dropped work — a node stored the event but crashed before
+     * draining it. Sorted by event creation time so oldest unprocessed events
+     * are recovered first.
+     */
+    @Query("""
+        SELECT DISTINCT s.id FROM SagaEntity s
+          JOIN SagaEventEntity e ON e.sagaId = s.id
+         WHERE s.status = 'RUNNING'
+           AND e.status = 'PENDING'
+         ORDER BY e.createdAt ASC
+         LIMIT :limit
+    """)
+    fun findAwaitingWithPendingEvents(@Param("limit") limit: Int): List<String>
 }
 
-// SagaStepEntityRepository removed — steps are saved via CascadeType.ALL
-// on SagaEntity, and timeout polling is gone so findTimedOutSagaIds is dead code.
-
-// -------------------- STORAGE IMPLEMENTATION --------------------
+// ── Storage Implementation ────────────────────────────────────────────────────
 
 @Transactional
 class JpaSagaStorage(
     private val sagaRepo: SagaEntityRepository,
-    private val registry: SagaRegistry          // stepRepo removed
+    private val registry: SagaRegistry
 ) : SagaStorage {
 
     private val mapper = jacksonObjectMapper()
@@ -105,9 +143,10 @@ class JpaSagaStorage(
                 updatedAt = now
             )
 
-        entity.status    = status
-        entity.payload   = payload
-        entity.updatedAt = now
+        entity.status          = status
+        entity.payload         = payload
+        entity.updatedAt       = now
+        entity.lastProcessedAt = now    // stamp every persist
 
         stepState.forEach { (stepId, state) ->
             val stepEntity = entity.steps.find { it.id.stepId == stepId }
@@ -157,6 +196,14 @@ class JpaSagaStorage(
     @Transactional(readOnly = true)
     override fun findActiveSagaIds(): List<String> = sagaRepo.findActiveIds()
 
+    @Transactional(readOnly = true)
+    override fun findLeastRecentlyProcessed(limit: Int): List<String> =
+        sagaRepo.findLeastRecentlyProcessed(limit)
+
+    @Transactional(readOnly = true)
+    override fun findAwaitingWithPendingEvents(limit: Int): List<String> =
+        sagaRepo.findAwaitingWithPendingEvents(limit)
+
     private fun buildPayload(saga: Saga<*>): Map<String, Any?> {
         val descriptor = SagaDescriptorCache.get(saga::class.java)
         return descriptor.persistedFields.associate { it.name to it.get(saga) }
@@ -167,12 +214,12 @@ class JpaSagaStorage(
             ?: error("Saga class ${saga::class.simpleName} has no @SagaType annotation")
 
     private fun deriveSagaStatus(stepState: Map<String, StepState>): String = when {
-        stepState.values.any { it.status == StepStatus.COMPENSATING } -> "COMPENSATING"
-        stepState.values.any { it.status == StepStatus.FAILED }       -> "FAILED"
-        stepState.values.any { it.status == StepStatus.COMPENSATED }  -> "COMPENSATED"
+        stepState.values.any { it.status == StepStatus.COMPENSATING }  -> "COMPENSATING"
+        stepState.values.any { it.status == StepStatus.FAILED }        -> "FAILED"
+        stepState.values.any { it.status == StepStatus.COMPENSATED }   -> "COMPENSATED"
         stepState.values.all {
             it.status == StepStatus.SUCCESS || it.status == StepStatus.SKIPPED
-        }                                                              -> "COMPLETED"
-        else                                                           -> "RUNNING"
+        }                                                               -> "COMPLETED"
+        else                                                            -> "RUNNING"
     }
 }

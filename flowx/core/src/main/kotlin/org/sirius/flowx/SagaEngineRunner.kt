@@ -19,13 +19,24 @@ class SagaEngineRunner(
 
             job = CoroutineScope(Dispatchers.Default).launch {
                 logger.info("SagaEngineRunner started")
+                var tick = 0
                 while (running.get()) {
                     try {
-                        engine.processPendingEvents()
-                        engine.processActiveSagas()
+                        tick++
+                        // Every 5s — drain pending events for AWAITING_EVENT sagas
+                        // whose node crashed between store() and drain()
+                        // More frequent than stuck scan because event latency is user-visible
+                        if (tick % 100 == 0) {
+                            engine.recoverPendingEvents()
+                        }
+                        // Every 10s — recover stuck RUNNING/COMPENSATING sagas
+                        // sorted by lastProcessedAt ASC so orphans/starved float to top
+                        if (tick % 200 == 0) {
+                            engine.recoverStuckSagas()
+                        }
                         delay(50)
                     } catch (ex: Exception) {
-                        logger.error("Error in SagaEngineRunner loop", ex)
+                        logger.error("Error in SagaEngineRunner", ex)
                     }
                 }
             }

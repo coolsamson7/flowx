@@ -89,11 +89,6 @@ enum class StepStatus {
     FAILED
 }
 
-data class SagaContext(
-    val crashAfterStep: String? = null,
-    val failOn: String? = null
-)
-
 class SagaDefinition<T : Any>(
     val nodes: List<Node<T>>,
     val commandHandler: ((T, Command) -> Unit)? = null

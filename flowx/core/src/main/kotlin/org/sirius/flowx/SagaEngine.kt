@@ -20,6 +20,7 @@ class SagaEngine(
 ) : DisposableBean, EventSink {
 
     private val logger = LoggerFactory.getLogger(SagaEngine::class.java)
+    val instanceId     = UUID.randomUUID().toString()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -128,33 +129,75 @@ class SagaEngine(
     }
 
     // --------------------------------------------------
-    // Runner entry points
+    // Runner entry points — recovery only, not primary execution
     // --------------------------------------------------
 
-    suspend fun processPendingEvents() {
-        cache.keys.toList().forEach { sagaId ->
-            val runtime = fromCache(sagaId) ?: return@forEach
-            val hasAwaiting = runtime.instance.typedNodes()
-                .any { runtime.stepState[it.id]?.status == StepStatus.AWAITING_EVENT }
-            if (hasAwaiting) drainPendingEvents(sagaId)
+    /**
+     * Recover RUNNING/COMPENSATING sagas not in this node's cache.
+     * Sorted by lastProcessedAt ASC so orphans from crashed nodes and
+     * starved sagas float to the top naturally.
+     * Redis sagaLock ensures only one node executes each saga.
+     */
+    suspend fun recoverStuckSagas(pageSize: Int = 100) {
+        val candidates = withContext(Dispatchers.IO) {
+            storage.findLeastRecentlyProcessed(pageSize)
         }
-    }
 
-    fun processActiveSagas() {
-        cache.keys.toList().forEach { sagaId ->
-            val runtime = fromCache(sagaId) ?: return@forEach
-            runtime.instance.typedNodes()
-                .filter { node -> isReady(node, runtime.stepState[node.id]!!) }
-                .forEach { node ->
-                    scope.launch {
-                        sagaLock.withLock(sagaId) { executeNode(sagaId, node) }
+        candidates.filter { !cache.containsKey(it) }.forEach { sagaId ->
+            scope.launch {
+                sagaLock.withLock(sagaId) {
+                    if (cache.containsKey(sagaId)) return@withLock
+
+                    val loaded = withContext(Dispatchers.IO) {
+                        runCatching { storage.load(sagaId, factory) }.getOrNull()
+                    } ?: return@withLock
+
+                    val needsWork = loaded.stepState.values.any {
+                        it.status in setOf(
+                            StepStatus.PENDING,
+                            StepStatus.RUNNING,
+                            StepStatus.COMPENSATING
+                        )
                     }
+                    if (!needsWork) return@withLock
+
+                    putInCache(loaded)
+
+                    loaded.stepState.entries
+                        .filter { it.value.status == StepStatus.AWAITING_EVENT
+                                && it.value.timeoutAt != null }
+                        .forEach { (stepId, state) ->
+                            scheduleTimeout(sagaId, stepId, state.timeoutAt!!)
+                        }
+
+                    scheduleReadyNodes(sagaId)
                 }
+            }
+        }
+    }
+
+    /**
+     * Recover AWAITING_EVENT sagas that have PENDING events in the event store.
+     * These represent dropped work — a node stored the event but crashed before
+     * calling drainPendingEvents(). Does NOT load ALL awaiting sagas — only
+     * those with concrete evidence of a pending event.
+     */
+    suspend fun recoverPendingEvents(pageSize: Int = 100) {
+        val candidates = withContext(Dispatchers.IO) {
+            storage.findAwaitingWithPendingEvents(pageSize)
+        }
+
+        candidates.forEach { sagaId ->
+            scope.launch {
+                sagaLock.withLock(sagaId) {
+                    drainPendingEvents(sagaId)
+                }
+            }
         }
     }
 
     // --------------------------------------------------
-    // Restore
+    // Restore on startup
     // --------------------------------------------------
 
     private suspend fun restoreActiveSagas() {
@@ -177,7 +220,6 @@ class SagaEngine(
                         completeSaga(loaded, success = false)
                     }
                 } else {
-                    // Reschedule any timeouts that were active before restart
                     loaded.stepState.entries
                         .filter { it.value.status == StepStatus.AWAITING_EVENT
                                 && it.value.timeoutAt != null }
@@ -193,7 +235,7 @@ class SagaEngine(
     }
 
     // --------------------------------------------------
-    // Timeout — one coroutine per timeout, no polling
+    // Timeout — exact coroutine per timeout, no polling
     // --------------------------------------------------
 
     private fun scheduleTimeout(sagaId: String, stepId: String, timeoutAt: Long) {
@@ -208,13 +250,12 @@ class SagaEngine(
                     logger.warn("Step '$stepId' of saga '$sagaId' timed out")
                     failSaga(runtime, stepId)
                 }
-                // If status changed (event arrived before timeout) — do nothing
             }
         }
     }
 
     // --------------------------------------------------
-    // Event drain — no claiming, sagaLock serialises access
+    // Event drain — sagaLock serialises, no DB-level locking needed
     // --------------------------------------------------
 
     private suspend fun drainPendingEvents(sagaId: String) {
@@ -242,7 +283,7 @@ class SagaEngine(
                 .find { runtime.stepState[it.id]?.status == StepStatus.AWAITING_EVENT }
 
             if (node == null) {
-                // No step waiting yet — leave as PENDING, runner will retry
+                // No step waiting yet — leave PENDING, recoverPendingEvents will retry
                 continue
             }
 
@@ -257,7 +298,7 @@ class SagaEngine(
                     withContext(Dispatchers.IO) {
                         try { eventStore.markProcessed(pendingEvent.id) }
                         catch (ex: Throwable) {
-                            logger.warn("Failed to mark event ${pendingEvent.id} as processed", ex)
+                            logger.warn("Failed to mark event ${pendingEvent.id} processed", ex)
                         }
                     }
                 }
@@ -303,7 +344,7 @@ class SagaEngine(
     }
 
     // --------------------------------------------------
-    // Completion
+    // Completion + cache eviction
     // --------------------------------------------------
 
     private fun completeSaga(runtime: LoadedSaga<Saga<*>>, success: Boolean) {
@@ -315,7 +356,27 @@ class SagaEngine(
         scope.launch {
             delay(cacheTTL)
             cache.remove(sagaId)
-            logger.debug("Evicted completed saga $sagaId from cache")
+            logger.debug("Evicted saga $sagaId from cache")
+        }
+    }
+
+    /**
+     * Park AWAITING_EVENT sagas — evict from cache after idle period.
+     * They consume memory but need no CPU until an event arrives.
+     * dispatch() → getOrLoad() will reload them transparently when needed.
+     * recoverPendingEvents() handles the crash-recovery case.
+     */
+    private fun parkAwaitingEvent(sagaId: String) {
+        scope.launch {
+            delay(60_000)   // 1 min idle → evict
+            val runtime = fromCache(sagaId) ?: return@launch
+            val allParked = runtime.instance.typedNodes()
+                .filter { !isDone(runtime.stepState[it.id]?.status) }
+                .all { runtime.stepState[it.id]?.status == StepStatus.AWAITING_EVENT }
+            if (allParked) {
+                cache.remove(sagaId)
+                logger.debug("Parked saga $sagaId evicted (AWAITING_EVENT, idle)")
+            }
         }
     }
 
@@ -342,14 +403,6 @@ class SagaEngine(
     // Node execution
     // --------------------------------------------------
 
-    private fun skipBranchSubtree(node: Node<*>, runtime: LoadedSaga<Saga<*>>, joinNodeId: String) {
-        if (node.id == joinNodeId) return
-        val st = runtime.stepState[node.id] ?: return
-        if (st.status != StepStatus.PENDING) return
-        st.status = StepStatus.SKIPPED
-        node.successors.forEach { skipBranchSubtree(it, runtime, joinNodeId) }
-    }
-
     private suspend fun <T : Saga<*>> executeNode(sagaId: String, node: Node<T>): Boolean {
         val runtime = getOrLoad(sagaId) ?: return false
 
@@ -375,6 +428,23 @@ class SagaEngine(
         }
     }
 
+    /**
+     * Recursively mark branch subtree nodes as SKIPPED, stopping at the join.
+     * Called when a condition gate evaluates — nodes in the untaken path must
+     * be SKIPPED so all { isDone } can return true and completeSaga fires.
+     */
+    private fun skipBranchSubtree(
+        node: Node<*>,
+        runtime: LoadedSaga<Saga<*>>,
+        joinNodeId: String
+    ) {
+        if (node.id == joinNodeId) return
+        val st = runtime.stepState[node.id] ?: return
+        if (st.status != StepStatus.PENDING) return
+        st.status = StepStatus.SKIPPED
+        node.successors.forEach { skipBranchSubtree(it, runtime, joinNodeId) }
+    }
+
     @Suppress("UNCHECKED_CAST")
     private suspend fun <T : Saga<*>> executeStep(
         sagaId: String,
@@ -392,7 +462,9 @@ class SagaEngine(
                     while (next is ConditionNode<*>) {
                         val nextCond = next as ConditionNode<*>
                         runtime.stepState[next.id]!!.status = StepStatus.SKIPPED
-                        nextCond.successors.forEach { skipBranchSubtree(it, runtime, condNode.joinNodeId) }
+                        nextCond.successors.forEach { successor ->
+                            skipBranchSubtree(successor, runtime, condNode.joinNodeId)
+                        }
                         next = nextCond.elseTarget
                     }
                     persist(runtime)
@@ -404,8 +476,10 @@ class SagaEngine(
 
                 runtime.mutex.withLock {
                     runtime.stepState[node.id]!!.status = StepStatus.SKIPPED
-                    // Skip the branch steps of THIS gate (the path not taken)
-                    node.successors.forEach { skipBranchSubtree(it, runtime, condNode.joinNodeId) }
+                    // Skip branch steps of THIS gate — the path not taken
+                    node.successors.forEach { successor ->
+                        skipBranchSubtree(successor, runtime, condNode.joinNodeId)
+                    }
                     runtime.stepState[target.id]!!.tokenCount += 1
                     persist(runtime)
                 }
@@ -440,6 +514,8 @@ class SagaEngine(
             }
             if (timeoutAt != null) scheduleTimeout(sagaId, node.id, timeoutAt)
             drainPendingEvents(sagaId)
+            // Park after drain — evict from cache if no event arrives soon
+            parkAwaitingEvent(sagaId)
         } else {
             completeNode(sagaId, node)
         }
@@ -500,7 +576,9 @@ class SagaEngine(
 
     private suspend fun getOrLoad(sagaId: String): LoadedSaga<Saga<*>>? {
         fromCache(sagaId)?.let { return it }
-        val loaded = withContext(Dispatchers.IO) { storage.load(sagaId, factory) }
+        val loaded = withContext(Dispatchers.IO) {
+            runCatching { storage.load(sagaId, factory) }.getOrNull()
+        } ?: return null
         putInCache(loaded)
         return loaded
     }
