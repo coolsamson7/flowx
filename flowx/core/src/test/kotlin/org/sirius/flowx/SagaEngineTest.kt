@@ -148,17 +148,17 @@ class BranchingSaga : AbstractSaga<BranchingSaga>() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// In-memory SagaEventStore — implements the simplified interface
+// In-memory SagaEventStore
 // ─────────────────────────────────────────────────────────────────────────────
 
 class TestEventStore : SagaEventStore {
     private val mapper = jacksonObjectMapper()
 
     private data class Row(
-        val id:        String,
-        val sagaId:    String,
+        val id:         String,
+        val sagaId:     String,
         val eventClass: String,
-        val payload:   String,
+        val payload:    String,
         @Volatile var processed: Boolean = false,
         @Volatile var failed:    Boolean = false
     )
@@ -231,9 +231,8 @@ class SagaEngineTest {
             factory    = factory,
             registry   = registry,
             sagaLock   = LocalSagaLock(),
-            eventStore = eventStore          // no timeoutQueue
+            eventStore = eventStore
         )
-        // Drive execution manually — no background runner
     }
 
     @AfterEach
@@ -293,7 +292,9 @@ class SagaEngineTest {
 
     @Test
     fun `async step completes when success event is dispatched`() = runBlocking {
-        val sagaId = engine.start(factory.create(AsyncSaga::class.java)).id
+        val sagaId = engine.start(
+            factory.create(AsyncSaga::class.java) { id = UUID.randomUUID().toString() }
+        ).id
 
         engine.dispatch(sagaId, OkEvent(sagaId = sagaId, value = "done"))
 
@@ -307,7 +308,9 @@ class SagaEngineTest {
 
     @Test
     fun `failure event on async step triggers compensation`() = runBlocking {
-        val sagaId = engine.start(factory.create(AsyncSaga::class.java)).id
+        val sagaId = engine.start(
+            factory.create(AsyncSaga::class.java) { id = UUID.randomUUID().toString() }
+        ).id
 
         engine.dispatch(sagaId, NokEvent(sagaId = sagaId))
 
@@ -334,7 +337,9 @@ class SagaEngineTest {
 
     @Test
     fun `exception in step triggers compensation and saga reports failure`() = runBlocking {
-        val sagaId = engine.start(factory.create(FailingSaga::class.java)).id
+        val sagaId = engine.start(
+            factory.create(FailingSaga::class.java) { id = UUID.randomUUID().toString() }
+        ).id
 
         assertFalse(awaitCompletion(sagaId))
 
@@ -345,7 +350,9 @@ class SagaEngineTest {
 
     @Test
     fun `compensation runs in strict reverse order`() = runBlocking {
-        val sagaId = engine.start(factory.create(MultiCompSaga::class.java)).id
+        val sagaId = engine.start(
+            factory.create(MultiCompSaga::class.java) { id = UUID.randomUUID().toString() }
+        ).id
 
         assertFalse(awaitCompletion(sagaId))
 
@@ -355,7 +362,9 @@ class SagaEngineTest {
 
     @Test
     fun `compensationStarted flag prevents double-compensation`() = runBlocking {
-        val sagaId = engine.start(factory.create(FailingSaga::class.java)).id
+        val sagaId = engine.start(
+            factory.create(FailingSaga::class.java) { id = UUID.randomUUID().toString() }
+        ).id
         assertFalse(awaitCompletion(sagaId))
 
         val s = loadSaga(sagaId) as FailingSaga
@@ -391,8 +400,11 @@ class SagaEngineTest {
 
     @Test
     fun `saga restores from storage and completes on next event`() = runBlocking {
-        val sagaId = engine.start(factory.create(AsyncSaga::class.java)).id
+        // Assign real ID so storage key is stable
+        val saga   = factory.create(AsyncSaga::class.java) { id = UUID.randomUUID().toString() }
+        val sagaId = engine.start(saga).id
 
+        // Wait until "before" step completes — "async" step will then be AWAITING_EVENT
         withTimeout(3_000) {
             while (storage.load(sagaId, factory).stepState["before"]?.status != StepStatus.SUCCESS) {
                 delay(20)
@@ -409,7 +421,7 @@ class SagaEngineTest {
             eventStore = eventStore
         )
         engine2.initialize()
-        delay(300)
+        delay(300)  // let restoreActiveSagas() finish on Dispatchers.IO
 
         engine2.dispatch(sagaId, OkEvent(sagaId = sagaId, value = "restored"))
 
@@ -440,6 +452,7 @@ class SagaEngineTest {
             eventStore = eventStore
         )
         engine2.initialize()
+        delay(300)  // wait for restoreActiveSagas() to put saga in cache
 
         val d = CompletableDeferred<Boolean>()
         engine2.onComplete(saga.id) { d.complete(it) }
@@ -452,26 +465,32 @@ class SagaEngineTest {
     @Test
     fun `branch takes high path when condition is true`() = runBlocking {
         val sagaId = engine.start(
-            factory.create(BranchingSaga::class.java) { amount = 150.0 }
+            factory.create(BranchingSaga::class.java) {
+                id     = UUID.randomUUID().toString()
+                amount = 150.0
+            }
         ).id
         assertTrue(awaitCompletion(sagaId))
 
         val s = loadSaga(sagaId) as BranchingSaga
-        assertTrue(s.highRan,   "high branch should run for amount > 100")
-        assertFalse(s.lowRan,   "low branch should NOT run")
-        assertTrue(s.afterRan,  "step after branch should always run")
+        assertTrue(s.highRan,  "high branch should run for amount > 100")
+        assertFalse(s.lowRan,  "low branch should NOT run")
+        assertTrue(s.afterRan, "step after branch should always run")
     }
 
     @Test
     fun `branch takes low path when condition is false`() = runBlocking {
         val sagaId = engine.start(
-            factory.create(BranchingSaga::class.java) { amount = 50.0 }
+            factory.create(BranchingSaga::class.java) {
+                id     = UUID.randomUUID().toString()
+                amount = 50.0
+            }
         ).id
         assertTrue(awaitCompletion(sagaId))
 
         val s = loadSaga(sagaId) as BranchingSaga
-        assertFalse(s.highRan,  "high branch should NOT run for amount <= 100")
-        assertTrue(s.lowRan,    "low branch should run")
-        assertTrue(s.afterRan,  "step after branch should always run")
+        assertFalse(s.highRan, "high branch should NOT run for amount <= 100")
+        assertTrue(s.lowRan,   "low branch should run")
+        assertTrue(s.afterRan, "step after branch should always run")
     }
 }

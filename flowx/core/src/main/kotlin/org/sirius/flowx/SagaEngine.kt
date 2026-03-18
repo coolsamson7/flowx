@@ -378,6 +378,16 @@ class SagaEngine(
             val matches  = condNode.branchCondition(runtime.instance as T)
 
             if (matches) {
+                // Mark all remaining chained gates as SKIPPED —
+                // they will never receive a token since this branch was taken
+                runtime.mutex.withLock {
+                    var next: Node<*>? = condNode.elseTarget
+                    while (next is ConditionNode<*>) {
+                        runtime.stepState[next.id]!!.status = StepStatus.SKIPPED
+                        next = (next as ConditionNode<*>).elseTarget
+                    }
+                    persist(runtime)
+                }
                 completeNode(sagaId, node)
             } else {
                 val target = condNode.elseTarget
@@ -417,7 +427,6 @@ class SagaEngine(
                 st.timeoutAt = timeoutAt
                 persist(runtime)
             }
-            // Schedule exact-time timeout coroutine — no polling
             if (timeoutAt != null) scheduleTimeout(sagaId, node.id, timeoutAt)
             drainPendingEvents(sagaId)
         } else {

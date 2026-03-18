@@ -85,10 +85,16 @@ class InMemorySagaStorage(private val registry: SagaRegistry) : SagaStorage {
     }
 
     override fun findActiveSagaIds(): List<String> {
+        val activeStatuses = setOf(
+            StepStatus.RUNNING.name,
+            StepStatus.COMPENSATING.name,
+            StepStatus.AWAITING_EVENT.name,
+            StepStatus.PENDING.name
+        )
         return storage.filter { (_, json) ->
             val wrapper: Map<String, Any?> = mapper.readValue(json, Map::class.java) as Map<String, Any?>
             val stepState = wrapper["stepState"] as Map<String, Map<String, Any?>>
-            stepState.values.any { it["status"] != StepStatus.SUCCESS.name }
+            stepState.values.any { it["status"] in activeStatuses }
         }.keys.toList()
     }
 }
