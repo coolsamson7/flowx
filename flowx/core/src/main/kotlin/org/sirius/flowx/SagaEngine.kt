@@ -342,6 +342,14 @@ class SagaEngine(
     // Node execution
     // --------------------------------------------------
 
+    private fun skipBranchSubtree(node: Node<*>, runtime: LoadedSaga<Saga<*>>, joinNodeId: String) {
+        if (node.id == joinNodeId) return
+        val st = runtime.stepState[node.id] ?: return
+        if (st.status != StepStatus.PENDING) return
+        st.status = StepStatus.SKIPPED
+        node.successors.forEach { skipBranchSubtree(it, runtime, joinNodeId) }
+    }
+
     private suspend fun <T : Saga<*>> executeNode(sagaId: String, node: Node<T>): Boolean {
         val runtime = getOrLoad(sagaId) ?: return false
 
@@ -378,13 +386,14 @@ class SagaEngine(
             val matches  = condNode.branchCondition(runtime.instance as T)
 
             if (matches) {
-                // Mark all remaining chained gates as SKIPPED —
-                // they will never receive a token since this branch was taken
                 runtime.mutex.withLock {
+                    // Skip all remaining chained gates AND their branch subtrees
                     var next: Node<*>? = condNode.elseTarget
                     while (next is ConditionNode<*>) {
+                        val nextCond = next as ConditionNode<*>
                         runtime.stepState[next.id]!!.status = StepStatus.SKIPPED
-                        next = (next as ConditionNode<*>).elseTarget
+                        nextCond.successors.forEach { skipBranchSubtree(it, runtime, condNode.joinNodeId) }
+                        next = nextCond.elseTarget
                     }
                     persist(runtime)
                 }
@@ -395,6 +404,8 @@ class SagaEngine(
 
                 runtime.mutex.withLock {
                     runtime.stepState[node.id]!!.status = StepStatus.SKIPPED
+                    // Skip the branch steps of THIS gate (the path not taken)
+                    node.successors.forEach { skipBranchSubtree(it, runtime, condNode.joinNodeId) }
                     runtime.stepState[target.id]!!.tokenCount += 1
                     persist(runtime)
                 }

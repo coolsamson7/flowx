@@ -5,6 +5,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import org.sirius.demo.PaymentConfirmed
 import org.sirius.flowx.AbstractSaga
 import org.sirius.flowx.Event
 import org.sirius.flowx.*
@@ -86,7 +87,12 @@ data class ApprovalDenied(override val sagaId: String, val reason: String)  : Ev
 
 @Component
 class PaymentService(val bus : EventBus) {
-    fun pay(amount: Double) = println("PaymentService.pay($amount)")
+    fun pay(sagaId: String, amount: Double) {
+        println("PaymentService.pay($amount)")
+
+        bus.publish(PaymentConfirmed(sagaId = sagaId, txId = "TX-001"))
+    }
+
     fun compensate()        = println("PaymentService.compensate")
 }
 
@@ -98,9 +104,10 @@ class InventoryService(val bus : EventBus) {
 
 @Component
 class ApprovalService(val bus : EventBus) {
-    fun requestApproval(customerName: String) {
+    fun requestApproval(sagaId: String, customerName: String) {
         println("ApprovalService.requestApproval($customerName)")
-        //bus.publish(ApprovalGranted(sagaId = ))
+
+        bus.publish(ApprovalGranted(sagaId = sagaId))
     }
 }
 
@@ -125,13 +132,16 @@ class OrderSaga : AbstractSaga<OrderSaga>() {
 
             // Populate saga state from the triggering command —
             // saga fields are directly in scope (no 'saga.' prefix needed)
+
             on<PlaceOrderCommand> { cmd ->
                 customerName = cmd.customerName
                 amount       = cmd.amount
             }
 
             step("validate") {
-                execute   { println("validate order for $customerName ($$amount)") }
+                execute   {
+                    println("validate order for $customerName ($$amount)")
+                }
                 compensate { println("compensate validate") }
             }
 
@@ -139,7 +149,9 @@ class OrderSaga : AbstractSaga<OrderSaga>() {
             branch {
                 on({ amount > 1000.0 }) {
                     step("manualApproval") {
-                        execute { approvalService.requestApproval(customerName) }
+                        execute {
+                            approvalService.requestApproval(id, customerName)
+                        }
                         compensate { println("compensate manualApproval") }
 
                         // Receiver IS the saga — access fields directly, no 'saga' param
@@ -156,7 +168,9 @@ class OrderSaga : AbstractSaga<OrderSaga>() {
                 otherwise {
                     // Low-value order: auto-approved, nothing to do
                     step("autoApprove") {
-                        execute { println("auto-approved for $customerName") }
+                        execute {
+                            println("auto-approved for $customerName")
+                        }
                     }
                 }
             }
@@ -164,7 +178,7 @@ class OrderSaga : AbstractSaga<OrderSaga>() {
             parallel(join = Join.ALL) {
                 step("payment") {
                     execute {
-                        paymentService.pay(amount)
+                        paymentService.pay(id, amount)
                     }
                     compensate { paymentService.compensate() }
 
@@ -181,7 +195,9 @@ class OrderSaga : AbstractSaga<OrderSaga>() {
                 }
 
                 step("inventory") {
-                    execute   { inventoryService.reserve() }
+                    execute   {
+                        inventoryService.reserve()
+                    }
                     compensate { inventoryService.compensate() }
 
                     // Only reserve for substantial amounts — step-level condition
@@ -210,52 +226,41 @@ class OrderSaga : AbstractSaga<OrderSaga>() {
     ] // ← add
 )
 @Import(FlowxConfiguration::class)
-class DemoApplication(private val registry: SagaRegistry) {
-
-    @PostConstruct
-    fun init() {
-        registry.scanAndRegister()
-        println("Registered sagas: ${registry.allRegistered().keys}")
-    }
-}
+class DemoApplication
 
 // -------------------- RUNNER --------------------
 
 @Component
-class Runner(val engine: SagaEngine, val eventBus : EventBus) {
+class Runner(val engine: SagaEngine, val runner: SagaEngineRunner, val eventBus : EventBus) {
 
     @PostConstruct
     fun run() {
-        //
-        eventBus.subscribe<ApprovalGranted>(ApprovalGranted::class) { event -> engine.dispatch(event)}
-        eventBus.subscribe<ApprovalDenied>(ApprovalDenied::class) { event -> engine.dispatch(event)}
-        eventBus.subscribe<PaymentConfirmed>(PaymentConfirmed::class) { event -> engine.dispatch(event)}
+        // Start the engine runner manually since ApplicationReadyEvent
+        // won't fire until after @PostConstruct returns
+        runner.start()
 
-        // High-value order — hits the manualApproval branch
-        val sagaId = engine.send(PlaceOrderCommand(
-            customerName = "Andreas",
-            amount       = 1499.99
-        ))
+        EventDispatcher.register(Event::class) { event -> event.sagaId to event }
 
-        // In production these would arrive from Kafka / a webhook.
-        // The pending-event queue handles the race with async steps.
+        eventBus.subscribe<ApprovalGranted>(ApprovalGranted::class)   { event -> EventDispatcher.dispatch(event) }
+        eventBus.subscribe<ApprovalDenied>(ApprovalDenied::class)     { event -> EventDispatcher.dispatch(event) }
+        eventBus.subscribe<PaymentConfirmed>(PaymentConfirmed::class) { event -> EventDispatcher.dispatch(event) }
 
-        engine.dispatch(ApprovalGranted(sagaId = sagaId))
-        engine.dispatch(PaymentConfirmed(sagaId = sagaId, txId = "TX-001"))
+        val latch = java.util.concurrent.CountDownLatch(2)
 
+        val sagaId = engine.send(PlaceOrderCommand(customerName = "Andreas", amount = 1499.99))
         engine.onComplete(sagaId) { success ->
             println(if (success) "Order saga completed!" else "Order saga failed/compensated")
+            latch.countDown()
         }
 
-        // Low-value order — hits the autoApprove branch, skips manualApproval
-        val sagaId2 = engine.send(PlaceOrderCommand(
-            customerName = "Bob",
-            amount       = 49.99
-        ))
-        engine.dispatch(PaymentConfirmed(sagaId = sagaId2, txId = "TX-002"))
+        val sagaId2 = engine.send(PlaceOrderCommand(customerName = "Bob", amount = 49.99))
         engine.onComplete(sagaId2) { success ->
             println(if (success) "Small order completed!" else "Small order failed")
+            latch.countDown()
         }
+
+        latch.await()
+        println("All sagas done.")
     }
 }
 
