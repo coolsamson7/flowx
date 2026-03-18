@@ -1,5 +1,6 @@
 package org.sirius.flowx
 
+import jakarta.annotation.PostConstruct
 import org.springframework.context.ApplicationContext
 import org.springframework.stereotype.Component
 
@@ -37,4 +38,10 @@ class SagaRegistry(private val context: ApplicationContext) {
         commandRegistry[commandClass]
 
     fun allRegistered(): Map<String, Class<out Saga<*>>> = registry.toMap()
+
+    @PostConstruct
+    fun init() {
+        scanAndRegister()
+        println("Registered sagas: ${allRegistered().keys}")
+    }
 }

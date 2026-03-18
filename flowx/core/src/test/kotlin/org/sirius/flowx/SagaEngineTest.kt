@@ -346,7 +346,7 @@ class SagaEngineTest {
 
         // Dispatch immediately — the event is stored in the TestEventStore and
         // drained when the async step transitions to AWAITING_EVENT.
-        engine.dispatch(OkEvent(sagaId = sagaId, value = "done"))
+        engine.dispatch(sagaId, OkEvent(sagaId = sagaId, value = "done"))
 
         assertTrue(awaitCompletion(sagaId))
 
@@ -360,7 +360,7 @@ class SagaEngineTest {
     fun `failure event on async step triggers compensation of prior steps`() = runBlocking {
         val sagaId = engine.start(factory.create(AsyncSaga::class.java)).id
 
-        engine.dispatch(NokEvent(sagaId = sagaId))
+        engine.dispatch(sagaId, NokEvent(sagaId = sagaId))
 
         assertFalse(awaitCompletion(sagaId), "saga should complete with failure")
 
@@ -482,7 +482,7 @@ class SagaEngineTest {
         delay(300) // let restoreActiveSagas() complete on the IO dispatcher
 
         // Phase 3 — dispatch the event to the new engine instance.
-        engine2.dispatch(OkEvent(sagaId = sagaId, value = "restored"))
+        engine2.dispatch(sagaId, OkEvent(sagaId = sagaId, value = "restored"))
 
         val d = CompletableDeferred<Boolean>()
         engine2.onComplete(sagaId) { d.complete(it) }

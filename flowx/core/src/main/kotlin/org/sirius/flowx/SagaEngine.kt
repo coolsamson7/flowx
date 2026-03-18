@@ -1,6 +1,7 @@
 package org.sirius.flowx
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import jakarta.annotation.PostConstruct
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.withLock
 import org.slf4j.LoggerFactory
@@ -17,7 +18,7 @@ class SagaEngine(
     private val sagaLock: SagaLock,
     private val timeoutQueue: TimeoutQueue,
     private val eventStore: SagaEventStore
-) : DisposableBean {
+) : DisposableBean, EventSink {
 
     private val logger = LoggerFactory.getLogger(SagaEngine::class.java)
 
@@ -32,6 +33,11 @@ class SagaEngine(
     // --------------------------------------------------
     // Lifecycle
     // --------------------------------------------------
+
+    @PostConstruct
+    fun bindDispatcher() {
+        EventDispatcher.bind(this)
+    }
 
     fun initialize() {
         scope.launch(Dispatchers.IO) { restoreActiveSagas() }
@@ -58,8 +64,6 @@ class SagaEngine(
     private fun isDone(status: StepStatus?) =
         status == StepStatus.SUCCESS || status == StepStatus.SKIPPED
 
-    // FIX: ParallelJoinNode must accumulate requiredTokens before firing.
-    // All other nodes fire on the first token.
     private fun isReady(node: Node<*>, st: StepState): Boolean {
         val required = if (node is ParallelJoinNode) node.requiredTokens else 1
         return st.tokenCount >= required && st.status == StepStatus.PENDING
@@ -98,21 +102,21 @@ class SagaEngine(
         return instance
     }
 
-    fun dispatch(event: Event) {
+    override fun dispatch(sagaId: String, event: Event) {
         scope.launch(Dispatchers.IO) {
             try {
                 eventStore.store(event)
             } catch (ex: Throwable) {
                 logger.error("Failed to persist event ${event::class.simpleName} " +
-                        "for saga ${event.sagaId}", ex)
+                        "for saga $sagaId", ex)
                 return@launch
             }
 
-            val runtime = fromCache(event.sagaId)
+            val runtime = fromCache(sagaId)
             if (runtime != null) {
                 val awaitingNode = runtime.instance.typedNodes()
                     .find { runtime.stepState[it.id]?.status == StepStatus.AWAITING_EVENT }
-                if (awaitingNode != null) drainPendingEvents(event.sagaId)
+                if (awaitingNode != null) drainPendingEvents(sagaId)
             }
         }
     }
@@ -141,6 +145,8 @@ class SagaEngine(
         val activeSagaIds = cache.keys.toList()
         activeSagaIds.forEach { sagaId ->
             val runtime = fromCache(sagaId) ?: return@forEach
+            // Only filter — do NOT mark RUNNING here.
+            // executeNode marks RUNNING after acquiring sagaLock.
             val readyNodes = runtime.instance.typedNodes()
                 .filter { node ->
                     val st = runtime.stepState[node.id]!!
@@ -340,9 +346,7 @@ class SagaEngine(
                         val st = runtime.stepState[node.id]!!
                         isReady(node, st)
                     }
-                    .also { ready ->
-                        ready.forEach { runtime.stepState[it.id]!!.status = StepStatus.RUNNING }
-                    }
+                // No RUNNING marking here — executeNode does it after sagaLock
             }
             readyNodes.forEach { node ->
                 scope.launch {
@@ -358,6 +362,21 @@ class SagaEngine(
 
     private suspend fun <T : Saga<*>> executeNode(sagaId: String, node: Node<T>): Boolean {
         val runtime = getOrLoad(sagaId) ?: return false
+
+        // Atomically check + claim the node under mutex.
+        // Another coroutine scheduled for the same node (e.g. runner loop
+        // firing concurrently with scheduleReadyNodes) will find RUNNING and bail.
+        val alreadyClaimed = runtime.mutex.withLock {
+            val st = runtime.stepState[node.id]!!
+            if (st.status != StepStatus.PENDING) {
+                true    // someone else got here first
+            } else {
+                st.status = StepStatus.RUNNING   // claim it
+                false
+            }
+        }
+        if (alreadyClaimed) return false
+
         return try {
             runtime.mutex.withLock { persist(runtime) }
             executeStep(sagaId, node, runtime)
@@ -375,23 +394,13 @@ class SagaEngine(
         node: Node<T>,
         runtime: LoadedSaga<Saga<*>>
     ) {
-        // ------------------------------------------------------------------
-        // FIX: ConditionNode — evaluate branchCondition at runtime.
-        //
-        // true  → complete the gate normally so its successors (branch steps)
-        //         receive tokens and execute.
-        // false → mark gate SKIPPED, deliver a token to elseTarget
-        //         (next gate in chain, or BranchJoinNode when no branch matched).
-        // ------------------------------------------------------------------
         if (node is ConditionNode<*>) {
             val condNode = node as ConditionNode<T>
             val matches  = condNode.branchCondition(runtime.instance as T)
 
             if (matches) {
-                // Predicate true — proceed into this branch
                 completeNode(sagaId, node)
             } else {
-                // Predicate false — skip this branch, advance to elseTarget
                 val target = condNode.elseTarget
                     ?: error("ConditionNode '${node.id}' has no elseTarget — DSL wiring bug")
 
@@ -403,9 +412,6 @@ class SagaEngine(
 
                 val targetSt = runtime.stepState[target.id]!!
                 if (isReady(target, targetSt)) {
-                    runtime.mutex.withLock {
-                        runtime.stepState[target.id]!!.status = StepStatus.RUNNING
-                    }
                     scope.launch {
                         sagaLock.withLock(sagaId) { executeNode(sagaId, target) }
                     }
@@ -414,9 +420,6 @@ class SagaEngine(
             return
         }
 
-        // ------------------------------------------------------------------
-        // Regular node — optional step-level skip condition
-        // ------------------------------------------------------------------
         if (node.condition != null && !node.condition!!(runtime.instance as T)) {
             runtime.mutex.withLock {
                 runtime.stepState[node.id]!!.status = StepStatus.SKIPPED
@@ -469,18 +472,17 @@ class SagaEngine(
                 }
                 persist(runtime)
 
-                // FIX: isReady() respects requiredTokens for ParallelJoinNode
+                // Collect ready nodes — do NOT mark RUNNING here.
+                // executeNode marks RUNNING after acquiring sagaLock.
                 runtime.instance.typedNodes()
                     .filter { n ->
                         val st = runtime.stepState[n.id]!!
                         isReady(n, st)
                     }
-                    .also { ready ->
-                        ready.forEach { runtime.stepState[it.id]!!.status = StepStatus.RUNNING }
-                    }
             }
 
-            if (runtime.instance.typedNodes().all { isDone(runtime.stepState[it.id]?.status) }) {
+            if (runtime.instance.typedNodes()
+                    .all { isDone(runtime.stepState[it.id]?.status) }) {
                 completeSaga(runtime, success = true)
             } else {
                 readyToSchedule.forEach { n ->

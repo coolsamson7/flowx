@@ -187,8 +187,15 @@ class SagaDSL<T : Any> {
         }
 
         // Chain gates: gate[i].elseTarget = gate[i+1], last gate → joinNode
+        // Chain gates: gate[i].elseTarget = gate[i+1], last gate → joinNode
         gateNodes.forEachIndexed { i, gate ->
-            gate.elseTarget = if (i + 1 < gateNodes.size) gateNodes[i + 1] else joinNode
+            if (i + 1 < gateNodes.size) {
+                val nextGate = gateNodes[i + 1]
+                gate.elseTarget = nextGate
+                nextGate.predecessors.add(gate)  // ← real fix
+            } else {
+                gate.elseTarget = joinNode
+            }
         }
 
         // Only the first gate is wired to [prev] — the rest are reached via elseTarget

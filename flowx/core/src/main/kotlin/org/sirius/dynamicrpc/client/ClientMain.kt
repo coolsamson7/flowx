@@ -1,5 +1,6 @@
-package org.sirius.dynamicrpc
+package org.sirius.dynamicrpc.client
 import kotlinx.coroutines.runBlocking
+import org.sirius.dynamicrpc.ClientNode
 import org.sirius.dynamicrpc.user.UserService
 
 fun main() {

@@ -1,7 +1,5 @@
 package org.sirius.dynamicrpc
 
-import com.google.protobuf.DescriptorProtos
-import com.google.protobuf.Descriptors
 import com.google.protobuf.DynamicMessage
 import io.ktor.client.*
 import io.ktor.client.call.*
@@ -11,7 +9,6 @@ import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.coroutines.runBlocking
-import java.util.Base64
 import kotlin.reflect.full.findAnnotation
 import kotlin.reflect.full.memberProperties
 
