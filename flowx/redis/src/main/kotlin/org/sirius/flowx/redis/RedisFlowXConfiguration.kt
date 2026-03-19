@@ -8,7 +8,4 @@ import org.springframework.data.redis.core.StringRedisTemplate
 class RedisFlowxConfiguration(private val redis: StringRedisTemplate) {
     @Bean
     fun sagaLock() = RedisSagaLock(redis)
-
-    @Bean
-    fun timeoutQueue() = RedisTimeoutQueue(redis)
 }
