@@ -19,7 +19,7 @@ spec:
             - containerPort: 8080
           env:
             - name: REGISTRY_URL
-              value: "http://ingress:8080"   # adjust port if needed
+              value: "http://ingress:80"   # adjust port if needed
             - name: NODE_URL
               value: "http://node:8080"      # or your service name
             - name: NODE_PORT
