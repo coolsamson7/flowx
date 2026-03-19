@@ -6,6 +6,10 @@ plugins {
     id("com.google.cloud.tools.jib") version "3.4.0"
 }
 
+kotlin {
+    jvmToolchain(21)   // always compile to Java 21 regardless of Gradle JVM
+}
+
 dependencies {
     api(project(":flowx:core"))
 
@@ -19,7 +23,7 @@ dependencies {
 
 jib {
     from {
-        image = "eclipse-temurin:17-jre"
+        image = "eclipse-temurin:21-jre"
     }
     to {
         image = "ghcr.io/coolsamson7/ingress"
