@@ -33,7 +33,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 4️⃣ Determine which app & version from tag
+      # 4️⃣ Determine app & version from tag
       - name: Determine app & version
         run: |
           TAG=${GITHUB_REF#refs/tags/}
@@ -58,8 +58,13 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
-      # 6️⃣ Build & Push Docker Image using root gradlew
+      # 6️⃣ Clean Gradle cache (CI-friendly)
+      - name: Clean Gradle cache
+        run: rm -rf ~/.gradle/caches/
+
+      # 7️⃣ Build & Push Docker Image using root gradlew
       - name: Build & Push Docker Image
         run: |
           echo "Building $APP version $VERSION"
-          ./gradlew :k8demo/$APP:jib -Djib.to.image=${{ env.REGISTRY }}/${{ env.OWNER }}/$APP:$VERSION
+          ./gradlew --no-daemon :k8demo/$APP:jib --refresh-dependencies \
+            -Djib.to.image=${{ env.REGISTRY }}/${{ env.OWNER }}/$APP:$VERSION
