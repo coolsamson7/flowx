@@ -3,11 +3,11 @@ plugins {
     kotlin("plugin.spring")
     id("org.springframework.boot")
     id("io.spring.dependency-management")
-    id("com.google.cloud.tools.jib") version "3.4.0"
+    id("com.google.cloud.tools.jib") version "3.4.4"
 }
 
 kotlin {
-    jvmToolchain(21)   // always compile to Java 21 regardless of Gradle JVM
+    jvmToolchain(17)   // always compile to Java 21 regardless of Gradle JVM
 }
 
 dependencies {
