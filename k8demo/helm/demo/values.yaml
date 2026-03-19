@@ -1,0 +1,10 @@
+ingress:
+  image: ghcr.io/coolsamson7/ingress
+  tag: "latest"
+
+node:
+  image: ghcr.io/coolsamson7/node
+  tag: "latest"
+
+postgres:
+  enabled: true

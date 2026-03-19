@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingress
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ingress
+  template:
+    metadata:
+      labels:
+        app: ingress
+    spec:
+      containers:
+        - name: ingress
+          image: "{{ .Values.ingress.image }}:{{ .Values.ingress.tag }}"
+          ports:
+            - containerPort: 8080
+          env:
+            - name: NODE_URL
+              value: "http://node:8080"
