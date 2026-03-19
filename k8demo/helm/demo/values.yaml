@@ -4,7 +4,7 @@ ingress:
 
 node:
   image: ghcr.io/coolsamson7/node
-  tag: "1.0.21"
+  tag: "1.0.25"
 
 postgres:
   enabled: true
