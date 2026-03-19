@@ -88,6 +88,22 @@ class IngressNode(
                         "services" to services.size
                     ))
                 }
+
+                post("/invoke/{service}/{method}") {
+                    val serviceName  = call.parameters["service"]!!
+                    val methodName   = call.parameters["method"]!!
+                    val payloadBytes = call.receive<ByteArray>()
+
+                    val method = Registry.getLocalService(serviceName)?.methods?.get(methodName)
+                        ?: return@post call.respondText(
+                            "Service '$serviceName.$methodName' not found",
+                            status = HttpStatusCode.NotFound
+                        )
+
+                    val request  = DynamicMessage.parseFrom(method.requestType, payloadBytes)
+                    val response = method.handler(request)
+                    call.respondBytes(response.toByteArray())
+                }
             }
         }.start(wait = true)
     }
