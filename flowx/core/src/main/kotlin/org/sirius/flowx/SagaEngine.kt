@@ -552,7 +552,7 @@ class SagaEngine(
             } else {
                 readyToSchedule.forEach { n ->
                     scope.launch {
-                        sagaLock.withLock(sagaId) { executeNode(sagaId, n) }
+                        sagaLock.withLockWaiting(sagaId) { executeNode(sagaId, n) }
                     }
                 }
             }
