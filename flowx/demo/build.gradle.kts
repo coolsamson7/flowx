@@ -5,6 +5,10 @@ plugins {
     id("io.spring.dependency-management")
 }
 
+kotlin {
+    jvmToolchain(17)   // ← add this
+}
+
 dependencies {
     api(project(":flowx:core"))
 
