@@ -12,7 +12,6 @@ jobs:
     env:
       REGISTRY: ghcr.io
       OWNER: coolsamson7
-      # TMPDIR removed — was breaking Gradle JAR cache creation
 
     steps:
       - uses: actions/checkout@v3
@@ -21,7 +20,6 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-          cache: gradle   # let the action manage Gradle caching properly
 
       - uses: docker/login-action@v2
         with:
@@ -45,15 +43,18 @@ jobs:
             exit 1
           fi
 
-          echo "APP=$APP"       >> $GITHUB_ENV
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "Building $APP version $VERSION"
+          echo "APP=$APP"           >> $GITHUB_ENV
+          echo "VERSION=$VERSION"   >> $GITHUB_ENV
+          echo "Will build $APP version $VERSION"
 
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
+      - name: Clear corrupt Gradle JAR cache
+        run: rm -rf ~/.gradle/caches/jars-*
+
       - name: Build & Push Docker Image
         run: |
-          echo "Building $APP version $VERSION"
-          ./gradlew --no-daemon :k8demo/$APP:jib \
-            -Djib.to.image=${{ env.REGISTRY }}/${{ env.OWNER }}/$APP:$VERSION
+          echo "Building ${{ env.APP }} version ${{ env.VERSION }}"
+          ./gradlew --no-daemon --no-build-cache :k8demo/${{ env.APP }}:jib \
+            -Djib.to.image=${{ env.REGISTRY }}/${{ env.OWNER }}/${{ env.APP }}:${{ env.VERSION }}
