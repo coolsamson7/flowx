@@ -7,6 +7,7 @@ import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 
 abstract class RpcNode(
@@ -53,16 +54,29 @@ abstract class RpcNode(
      */
     protected fun pushToRegistry(registration: NodeRegistration) {
         runBlocking {
-            try {
-                httpClient.post("$registryUrl/register") {
-                    contentType(ContentType.Application.Json)
-                    setBody(registration)
+            val maxRetries = 10
+            val delayMs = 2000L
+
+            repeat(maxRetries) { attempt ->
+                try {
+                    httpClient.post("$registryUrl/register") {
+                        contentType(ContentType.Application.Json)
+                        setBody(registration)
+                    }
+
+                    println("[${nodeName()}] Registered successfully on attempt ${attempt + 1}")
+                    return@runBlocking
+
+                } catch (e: Exception) {
+                    println(
+                        "[${nodeName()}] WARN: Registry not available (attempt ${attempt + 1}/$maxRetries) — $e"
+                    )
+
+                    delay(delayMs)
                 }
-                println("[${nodeName()}] Pushed ${registration.services.size} service(s) " +
-                        "to registry @ $registryUrl")
-            } catch (e: Exception) {
-                println("[${nodeName()}] WARN: Could not push to registry — $e")
             }
+
+            println("[${nodeName()}] ERROR: Failed to register after $maxRetries attempts")
         }
     }
 
