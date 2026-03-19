@@ -1,0 +1,52 @@
+name: Build and Push App Docker Images
+
+on:
+  push:
+    tags:
+      - 'ingress-v*'
+      - 'node-v*'
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    env:
+      REGISTRY: ghcr.io
+      OWNER: coolsamson7
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine which app to build
+        id: app
+        run: |
+          echo "TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+          if [[ "${TAG}" == ingress-* ]]; then
+            echo "APP=ingress" >> $GITHUB_ENV
+            echo "VERSION=${TAG#ingress-}" >> $GITHUB_ENV
+          elif [[ "${TAG}" == node-* ]]; then
+            echo "APP=node" >> $GITHUB_ENV
+            echo "VERSION=${TAG#node-}" >> $GITHUB_ENV
+          else
+            echo "No app matched"
+            exit 1
+          fi
+
+      - name: Build & Push Docker Image
+        run: |
+          echo "Building $APP version $VERSION"
+          cd $APP
+          ./gradlew jib -Djib.to.image=ghcr.io/${OWNER}/${APP}:$VERSION
