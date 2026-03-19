@@ -1,4 +1,4 @@
-name: Build and Push App Docker Images
+name: Release: Build & Push Docker Images
 
 on:
   push:
@@ -14,15 +14,18 @@ jobs:
       OWNER: coolsamson7
 
     steps:
+      # 1️⃣ Checkout code
       - name: Checkout repository
         uses: actions/checkout@v3
 
+      # 2️⃣ Set up JDK 17
       - name: Set up JDK 17
         uses: actions/setup-java@v3
         with:
           distribution: temurin
           java-version: 17
 
+      # 3️⃣ Log in to GitHub Container Registry
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v2
         with:
@@ -30,23 +33,34 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 4️⃣ Determine which app & version
       - name: Determine which app to build
-        id: app
         run: |
-          echo "TAG=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
-          if [[ "${TAG}" == ingress-* ]]; then
-            echo "APP=ingress" >> $GITHUB_ENV
-            echo "VERSION=${TAG#ingress-}" >> $GITHUB_ENV
-          elif [[ "${TAG}" == node-* ]]; then
-            echo "APP=node" >> $GITHUB_ENV
-            echo "VERSION=${TAG#node-}" >> $GITHUB_ENV
+          # Get tag name
+          TAG=${GITHUB_REF#refs/tags/}
+          echo "Detected tag: $TAG"
+
+          # Determine app and version
+          if [[ "$TAG" == ingress-* ]]; then
+            APP=ingress
+            VERSION=${TAG#ingress-}
+          elif [[ "$TAG" == node-* ]]; then
+            APP=node
+            VERSION=${TAG#node-}
           else
             echo "No app matched"
             exit 1
           fi
 
+          echo "Building APP=$APP VERSION=$VERSION"
+
+          # Export to GitHub environment for next steps
+          echo "APP=$APP" >> $GITHUB_ENV
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      # 5️⃣ Build & push Docker image with Jib
       - name: Build & Push Docker Image
         run: |
           echo "Building $APP version $VERSION"
           cd $APP
-          ./gradlew jib -Djib.to.image=ghcr.io/${OWNER}/${APP}:$VERSION
+          ./gradlew jib -Djib.to.image=${{ env.REGISTRY }}/${{ env.OWNER }}/$APP:$VERSION
