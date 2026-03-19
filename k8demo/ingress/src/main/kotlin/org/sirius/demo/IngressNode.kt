@@ -6,7 +6,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication
 
 @SpringBootApplication
 class IngressApp() {
-    //@EventListener(ApplicationReadyEvent::class)
+    //@EventListener(ApplicationReadyEvent::class) ddd
     //fun onStartup() {
     //    runner.start()
     //}
