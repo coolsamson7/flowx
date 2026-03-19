@@ -10,14 +10,17 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write      # ← needed to push the values.yaml commit back
       packages: write
+
     env:
       REGISTRY: ghcr.io
       OWNER: coolsamson7
 
     steps:
       - uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-java@v3
         with:
@@ -33,8 +36,6 @@ jobs:
       - name: Determine app & version
         run: |
           TAG=${GITHUB_REF#refs/tags/}
-          echo "Detected tag: $TAG"
-
           if [[ "$TAG" == ingress-* ]]; then
             APP=ingress
             VERSION=${TAG#ingress-v}
@@ -45,7 +46,6 @@ jobs:
             echo "No app matched for tag: $TAG"
             exit 1
           fi
-
           echo "APP=$APP"           >> $GITHUB_ENV
           echo "VERSION=$VERSION"   >> $GITHUB_ENV
           echo "Will build $APP version $VERSION"
@@ -57,4 +57,30 @@ jobs:
         run: |
           echo "Building ${{ env.APP }} version ${{ env.VERSION }}"
           ./gradlew --no-daemon :k8demo:${{ env.APP }}:jib \
-            -Djib.to.image=${{ env.REGISTRY }}/${{ env.OWNER }}/${{ env.APP }}:${{ env.VERSION }}
+            -Djib.to.image=${{ env.REGISTRY }}/${{ env.OWNER }}/${{ env.APP }}:${{ env.VERSION }} \
+            -Djib.to.auth.username=${{ github.actor }} \
+            -Djib.to.auth.password=${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Helm values
+        run: |
+          # Adjust path to your values.yaml
+          VALUES_FILE="k8demo/helm/${{ env.APP }}/values.yaml"
+
+          # Replace the image tag line — assumes format:  tag: "1.0.0"
+          sed -i "s/tag: .*/tag: \"${{ env.VERSION }}\"/" $VALUES_FILE
+
+          echo "Updated $VALUES_FILE:"
+          cat $VALUES_FILE
+
+      - name: Commit & push updated Helm values
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add k8demo/helm/${{ env.APP }}/values.yaml
+
+          # Only commit if there's actually a change
+          git diff --staged --quiet && echo "No changes to commit" && exit 0
+
+          git commit -m "chore: bump ${{ env.APP }} image to ${{ env.VERSION }} [skip ci]"
+          git push origin HEAD:main
