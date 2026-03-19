@@ -12,7 +12,7 @@ jobs:
     env:
       REGISTRY: ghcr.io
       OWNER: coolsamson7
-      GRADLE_USER_HOME: /tmp/gradle-home   # fresh dir, no stale cache, no locking issues
+      GRADLE_USER_HOME: ${{ github.workspace }}/.gradle-home
 
     steps:
       - uses: actions/checkout@v3
