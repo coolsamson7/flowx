@@ -245,7 +245,7 @@ class Runner(val engine: SagaEngine, val runner: SagaEngineRunner, val eventBus 
         eventBus.subscribe<ApprovalDenied>(ApprovalDenied::class)     { event -> EventDispatcher.dispatch(event) }
         eventBus.subscribe<PaymentConfirmed>(PaymentConfirmed::class) { event -> EventDispatcher.dispatch(event) }
 
-        val latch = java.util.concurrent.CountDownLatch(2)
+        val latch = java.util.concurrent.CountDownLatch(1)
 
         val sagaId = engine.send(PlaceOrderCommand(customerName = "Andreas", amount = 1499.99))
         engine.onComplete(sagaId) { success ->
@@ -253,11 +253,11 @@ class Runner(val engine: SagaEngine, val runner: SagaEngineRunner, val eventBus 
             latch.countDown()
         }
 
-        val sagaId2 = engine.send(PlaceOrderCommand(customerName = "Bob", amount = 49.99))
+        /*val sagaId2 = engine.send(PlaceOrderCommand(customerName = "Bob", amount = 49.99))
         engine.onComplete(sagaId2) { success ->
             println(if (success) "Small order completed!" else "Small order failed")
             latch.countDown()
-        }
+        }*/
 
         latch.await()
         println("All sagas done.")

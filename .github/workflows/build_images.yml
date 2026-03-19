@@ -33,14 +33,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 4️⃣ Determine which app & version
-      - name: Determine which app to build
+      # 4️⃣ Determine which app & version from tag
+      - name: Determine app & version
         run: |
-          # Get tag name
           TAG=${GITHUB_REF#refs/tags/}
           echo "Detected tag: $TAG"
 
-          # Determine app and version
           if [[ "$TAG" == ingress-* ]]; then
             APP=ingress
             VERSION=${TAG#ingress-}
@@ -52,15 +50,16 @@ jobs:
             exit 1
           fi
 
-          echo "Building APP=$APP VERSION=$VERSION"
-
-          # Export to GitHub environment for next steps
           echo "APP=$APP" >> $GITHUB_ENV
           echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Building $APP version $VERSION"
 
-      # 5️⃣ Build & push Docker image with Jib
+      # 5️⃣ Make Gradle wrapper executable
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      # 6️⃣ Build & Push Docker Image using root gradlew
       - name: Build & Push Docker Image
         run: |
           echo "Building $APP version $VERSION"
-          cd k8demo/$APP
-          ./gradlew jib -Djib.to.image=${{ env.REGISTRY }}/${{ env.OWNER }}/$APP:$VERSION
+          ./gradlew :k8demo/$APP:jib -Djib.to.image=${{ env.REGISTRY }}/${{ env.OWNER }}/$APP:$VERSION
