@@ -51,8 +51,48 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
+      - name: Debug environment
+        run: |
+          echo "=== Disk space ==="
+          df -h
+
+          echo "=== Java version ==="
+          java -version
+
+          echo "=== GRADLE_USER_HOME ==="
+          echo "$GRADLE_USER_HOME"
+
+          echo "=== Workspace permissions ==="
+          ls -la ${{ github.workspace }}
+
+          echo "=== Mount points ==="
+          mount | grep -E "noexec|nosuid" || echo "no noexec mounts found"
+
+          echo "=== ulimits ==="
+          ulimit -a
+
       - name: Build & Push Docker Image
         run: |
           echo "Building ${{ env.APP }} version ${{ env.VERSION }}"
-          ./gradlew --no-daemon --no-build-cache :k8demo/${{ env.APP }}:jib \
-            -Djib.to.image=${{ env.REGISTRY }}/${{ env.OWNER }}/${{ env.APP }}:${{ env.VERSION }}
+          ./gradlew --no-daemon --no-build-cache --stacktrace --info :k8demo/${{ env.APP }}:jib \
+            -Djib.to.image=${{ env.REGISTRY }}/${{ env.OWNER }}/${{ env.APP }}:${{ env.VERSION }} 2>&1 | tee build.log || true
+
+      - name: Show tail of build log on failure
+        if: failure()
+        run: |
+          echo "=== Last 100 lines of build output ==="
+          tail -100 build.log
+
+          echo "=== Disk space after failure ==="
+          df -h
+
+          echo "=== Gradle home contents ==="
+          ls -la ${{ github.workspace }}/.gradle-home/caches/ 2>/dev/null || echo "cache dir not found"
+
+          echo "=== Check the failing JAR in module cache ==="
+          find ${{ github.workspace }}/.gradle-home -name "jackson-core*.jar" 2>/dev/null | while read f; do
+            echo "$f: $(ls -lh $f) / $(file $f)"
+          done
+
+          echo "=== inode usage ==="
+          df -i
