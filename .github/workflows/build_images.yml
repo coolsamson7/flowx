@@ -56,5 +56,5 @@ jobs:
       - name: Build & Push Docker Image
         run: |
           echo "Building ${{ env.APP }} version ${{ env.VERSION }}"
-          ./gradlew --no-daemon :k8demo/${{ env.APP }}:jib \
+          ./gradlew --no-daemon :k8demo:${{ env.APP }}:jib \
             -Djib.to.image=${{ env.REGISTRY }}/${{ env.OWNER }}/${{ env.APP }}:${{ env.VERSION }}
