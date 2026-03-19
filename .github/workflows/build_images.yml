@@ -12,6 +12,7 @@ jobs:
     env:
       REGISTRY: ghcr.io
       OWNER: coolsamson7
+      GRADLE_USER_HOME: /tmp/gradle-home   # fresh dir, no stale cache, no locking issues
 
     steps:
       - uses: actions/checkout@v3
@@ -49,9 +50,6 @@ jobs:
 
       - name: Make gradlew executable
         run: chmod +x ./gradlew
-
-      - name: Clear corrupt Gradle JAR cache
-        run: rm -rf ~/.gradle/caches/jars-*
 
       - name: Build & Push Docker Image
         run: |
