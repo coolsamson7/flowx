@@ -8,7 +8,7 @@ import org.springframework.stereotype.Component
 @SpringBootApplication
 class NodeApp() {
     /*@EventListener(ApplicationReadyEvent::class)
-    fun onStartup() {
+    fun onStartup() {  s
         runner.start()
     }*/
 }
