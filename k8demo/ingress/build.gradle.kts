@@ -13,6 +13,9 @@ kotlin {
 dependencies {
     api(project(":flowx:core"))
 
+    implementation("org.springframework.boot:spring-boot-starter-actuator")   // ← add
+    implementation("io.micrometer:micrometer-registry-prometheus")             // ← add
+
     implementation("org.springframework.boot:spring-boot-starter")
     //implementation("org.springframework.boot:spring-boot-starter-data-jpa")
 
