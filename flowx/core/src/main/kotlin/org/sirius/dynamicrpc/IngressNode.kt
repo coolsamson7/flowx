@@ -41,6 +41,8 @@ class IngressNode(
         Registry.scanAndRegister(ctx, url = nodeUrl)
         printLocalState()
 
+        val metrics = ctx.getBean<RpcMetrics>(RpcMetrics::class.java)
+
         println("[${nodeName()}] Listening on port $nodePort...")
         embeddedServer(Netty, port = nodePort) {
             install(ContentNegotiation) { json() }
@@ -85,6 +87,8 @@ class IngressNode(
                 }
 
                 get("/health") {
+                    metrics.incrementCall("ingress", "health")
+
                     call.respond(
                         mapOf(
                             "status" to "up",

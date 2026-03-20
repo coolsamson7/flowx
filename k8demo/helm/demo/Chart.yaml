@@ -4,5 +4,23 @@ version: 0.1.0
 
 dependencies:
   - name: postgresql
-    version: 12.1.0
+    version: "12.1.0"
     repository: https://charts.bitnami.com/bitnami
+
+  # Prometheus + Grafana + AlertManager in one chart
+  - name: kube-prometheus-stack
+    version: "56.6.2"
+    repository: https://prometheus-community.github.io/helm-charts
+    condition: monitoring.enabled
+
+  # Loki (log storage)
+  - name: loki
+    version: "5.42.0"
+    repository: https://grafana.github.io/helm-charts
+    condition: monitoring.enabled
+
+  # Promtail (log shipper → Loki)
+  - name: promtail
+    version: "6.15.5"
+    repository: https://grafana.github.io/helm-charts
+    condition: monitoring.enabled

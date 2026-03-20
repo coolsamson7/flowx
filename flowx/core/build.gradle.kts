@@ -14,6 +14,9 @@ kotlin {
 dependencies {
     runtimeOnly("com.h2database:h2")
 
+    implementation("org.springframework.boot:spring-boot-starter-actuator")
+    implementation("io.micrometer:micrometer-registry-prometheus")
+
     // Ktor server
     implementation("io.ktor:ktor-server-core:2.3.0")
     implementation("io.ktor:ktor-server-netty:2.3.0")

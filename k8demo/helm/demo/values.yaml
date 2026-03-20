@@ -6,5 +6,67 @@ node:
   image: ghcr.io/coolsamson7/node
   tag: "1.0.27"
 
-postgres:
+# ── PostgreSQL ────────────────────────────────────────────────────────────────
+# Key MUST match the dependency name exactly ("postgresql", not "postgres")
+postgresql:
   enabled: true
+  auth:
+    database: demo
+    username: demo
+    password: demo
+  primary:
+    persistence:
+      enabled: true
+      size: 2Gi
+
+# ── Monitoring ────────────────────────────────────────────────────────────────
+monitoring:
+  enabled: true
+
+kube-prometheus-stack:
+  grafana:
+    enabled: true
+    adminPassword: admin   # change in production
+    service:
+      type: NodePort
+    sidecar:
+      datasources:
+        enabled: true
+    additionalDataSources:
+      - name: Loki
+        type: loki
+        url: http://loki:3100
+        access: proxy
+
+  prometheus:
+    prometheusSpec:
+      # Pick up any ServiceMonitor in the same namespace
+      serviceMonitorSelectorNilUsesHelmValues: false
+      podMonitorSelectorNilUsesHelmValues: false
+
+  alertmanager:
+    enabled: false   # enable when you need alerting
+
+loki:
+  loki:
+    auth_enabled: false
+    commonConfig:
+      replication_factor: 1
+    storage:
+      type: filesystem
+  singleBinary:
+    replicas: 1
+  persistence:
+    enabled: true
+    size: 5Gi
+
+promtail:
+  config:
+    clients:
+      - url: http://loki:3100/loki/api/v1/push
+    # Attach Kubernetes metadata to every log line
+    snippets:
+      pipelineStages:
+        - cri: {}
+        - labeldrop:
+            - filename
