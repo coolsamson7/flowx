@@ -1,6 +1,6 @@
 ingress:
   image: ghcr.io/coolsamson7/ingress
-  tag: "1.0.29"
+  tag: "1.0.30"
 
 node:
   image: ghcr.io/coolsamson7/node
