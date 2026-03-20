@@ -7,7 +7,7 @@ plugins {
 }
 
 kotlin {
-    jvmToolchain(17)   // always compile to Java 21 regardless of Gradle JVM
+    jvmToolchain(17)   // always compile to Jav a 17 regardless of Gradle JVM
 }
 
 dependencies {
