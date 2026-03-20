@@ -12,6 +12,7 @@ import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import org.springframework.boot.SpringApplication
 import kotlin.reflect.KClass
+import io.ktor.serialization.jackson.*
 
 class ServiceNode(
     private val springAppClass: KClass<*>,
@@ -41,7 +42,10 @@ class ServiceNode(
         // 4. Start Ktor — serve incoming RPC calls
         println("[${nodeName()}] Listening on port $nodePort...")
         embeddedServer(Netty, port = nodePort) {
-            install(ContentNegotiation) { json() }
+            install(ContentNegotiation) {
+                //json()
+                jackson()
+            }
             routing {
                 get("/health") {
                     call.respond(mapOf("status" to "up", "node" to nodeUrl))

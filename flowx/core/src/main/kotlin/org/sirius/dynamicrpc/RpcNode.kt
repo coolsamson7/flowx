@@ -10,7 +10,7 @@ import io.ktor.serialization.kotlinx.json.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 
-abstract class RpcNode(
+abstract class RpcNode( // j
     val registryUrl: String = System.getenv("REGISTRY_URL") ?: "http://localhost:9000"
 ) {
     protected val httpClient = HttpClient(CIO) {

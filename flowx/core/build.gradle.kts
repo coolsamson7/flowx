@@ -16,6 +16,7 @@ dependencies {
 
     implementation("org.springframework.boot:spring-boot-starter-actuator")
     implementation("io.micrometer:micrometer-registry-prometheus")
+    implementation("io.ktor:ktor-serialization-jackson:2.3.0")
 
     // Ktor server
     implementation("io.ktor:ktor-server-core:2.3.0")

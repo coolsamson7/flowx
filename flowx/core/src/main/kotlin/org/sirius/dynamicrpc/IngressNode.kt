@@ -18,7 +18,7 @@ import org.springframework.boot.SpringApplication
 import kotlin.reflect.KClass
 import io.ktor.client.call.*
 import io.ktor.client.plugins.contentnegotiation.*
-
+import io.ktor.serialization.jackson.*
 class IngressNode(
     private val springAppClass: KClass<*>,
     registryUrl: String = System.getenv("REGISTRY_URL") ?: "http://localhost:9000",
@@ -45,7 +45,10 @@ class IngressNode(
 
         println("[${nodeName()}] Listening on port $nodePort...")
         embeddedServer(Netty, port = nodePort) {
-            install(ContentNegotiation) { json() }
+            install(ContentNegotiation) {
+                //json()
+                jackson()
+            }
             routing {
 
                 // ── Registry endpoints ────────────────────────────────────────

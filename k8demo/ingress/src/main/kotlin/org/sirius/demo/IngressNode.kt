@@ -1,10 +1,13 @@
 package org.sirius.demo
 
 import org.sirius.dynamicrpc.IngressNode
+import org.sirius.flowx.FlowxConfiguration
 import org.springframework.boot.autoconfigure.SpringBootApplication
+import org.springframework.context.annotation.Import
 
 
 @SpringBootApplication
+@Import(FlowxConfiguration::class)
 class IngressApp() {
     //@EventListener(ApplicationReadyEvent::class) ddd
     //fun onStartup() {
