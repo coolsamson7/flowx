@@ -1,5 +1,6 @@
 package org.sirius.demo
 
+import org.sirius.dynamicrpc.RpcConfiguration
 import org.sirius.dynamicrpc.RpcType
 import org.sirius.dynamicrpc.ServiceNode
 import org.sirius.flowx.FlowxConfiguration
@@ -8,7 +9,7 @@ import org.springframework.context.annotation.Import
 import org.springframework.stereotype.Component
 
 @SpringBootApplication
-@Import(FlowxConfiguration::class)
+@Import(FlowxConfiguration::class, RpcConfiguration::class)
 class NodeApp() {
     /*@EventListener(ApplicationReadyEvent::class)
     fun onStartup() {  s
