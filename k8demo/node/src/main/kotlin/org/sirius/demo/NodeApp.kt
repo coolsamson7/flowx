@@ -11,7 +11,7 @@ import org.springframework.stereotype.Component
 @SpringBootApplication
 @Import(FlowxConfiguration::class, RpcConfiguration::class)
 class NodeApp() {
-    /*@EventListener(ApplicationReadyEvent::class)
+    /*@EventListener(ApplicationReadyEvent::class)d
     fun onStartup() {  s
         runner.start() s
     }*/
