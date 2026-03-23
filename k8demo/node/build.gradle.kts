@@ -13,6 +13,7 @@ kotlin {
 dependencies {
     api(project(":flowx:core"))
 
+    implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.springframework.boot:spring-boot-starter-actuator")   // ← add
     implementation("io.micrometer:micrometer-registry-prometheus")             // ← add
 
@@ -33,6 +34,6 @@ jib {
         image = "ghcr.io/coolsamson7/node"
     }
     container {
-        ports = listOf("8080")
+        ports = listOf("8080", "8081")
     }
 }

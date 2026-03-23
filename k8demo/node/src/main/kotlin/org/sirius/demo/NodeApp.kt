@@ -20,11 +20,11 @@ class NodeApp() {
 @RpcType
 data class User(val id: Int, val name: String)
 
-@Component
+/*@Component alread in core WTF
 class UserServiceImpl : UserService {
     override fun getUser(id: Int) = User(id, "User-$id")
     override fun greet(name: String) = "Hello, $name!"
-}
+}*/
 
 fun main() {
     ServiceNode(

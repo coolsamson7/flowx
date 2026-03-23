@@ -10,6 +10,8 @@ node:
 # Key MUST match the dependency name exactly ("postgresql", not "postgres")
 postgresql:
   enabled: true
+  image:
+    tag: "15.4.0"          # a tag that actually exists
   auth:
     database: demo
     username: demo
