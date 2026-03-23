@@ -13,7 +13,7 @@ import org.springframework.stereotype.Component
 class NodeApp() {
     /*@EventListener(ApplicationReadyEvent::class)d
     fun onStartup() {  s
-        runner.start() s
+        runner.start() ss
     }*/
 }
 
