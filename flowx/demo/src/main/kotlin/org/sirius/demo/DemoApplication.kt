@@ -88,7 +88,7 @@ data class ApprovalDenied(override val sagaId: String, val reason: String)  : Ev
 @Component
 class PaymentService(val bus : EventBus) {
     fun pay(sagaId: String, amount: Double) {
-        println("PaymentService.pay($amount)")
+        //println("PaymentService.pay($amount)")
 
         bus.publish(PaymentConfirmed(sagaId = sagaId, txId = "TX-001"))
     }
@@ -98,14 +98,14 @@ class PaymentService(val bus : EventBus) {
 
 @Component
 class InventoryService(val bus : EventBus) {
-    fun reserve()    = println("InventoryService.reserve")
+    fun reserve()    = {}//println("InventoryService.reserve")
     fun compensate() = println("InventoryService.compensate")
 }
 
 @Component
 class ApprovalService(val bus : EventBus) {
     fun requestApproval(sagaId: String, customerName: String) {
-        println("ApprovalService.requestApproval($customerName)")
+        //println("ApprovalService.requestApproval($customerName)")
 
         bus.publish(ApprovalGranted(sagaId = sagaId))
     }
@@ -140,7 +140,7 @@ class OrderSaga : AbstractSaga<OrderSaga>() {
 
             step("validate") {
                 execute   {
-                    println("validate order for $customerName ($$amount)")
+                    //println("validate order for $customerName ($$amount)")
                 }
                 compensate { println("compensate validate") }
             }
@@ -156,7 +156,7 @@ class OrderSaga : AbstractSaga<OrderSaga>() {
 
                         // Receiver IS the saga — access fields directly, no 'saga' param
                         onSuccess<ApprovalGranted> { _ ->
-                            println("approval granted for $customerName")
+                            //println("approval granted for $customerName")
                         }
                         onFailure<ApprovalDenied> { event ->
                             println("approval denied: ${event.reason}")
@@ -169,7 +169,7 @@ class OrderSaga : AbstractSaga<OrderSaga>() {
                     // Low-value order: auto-approved, nothing to do
                     step("autoApprove") {
                         execute {
-                            println("auto-approved for $customerName")
+                            //println("auto-approved for $customerName")
                         }
                     }
                 }
@@ -185,7 +185,7 @@ class OrderSaga : AbstractSaga<OrderSaga>() {
                     // Receiver IS the saga — txId is a saga field, set it directly
                     onSuccess<PaymentConfirmed> { event ->
                         txId = event.txId
-                        println("payment confirmed txId=$txId")
+                        //println("payment confirmed txId=$txId")
                     }
                     onFailure<PaymentFailed> { event ->
                         println("payment failed: ${event.reason}")
@@ -207,7 +207,7 @@ class OrderSaga : AbstractSaga<OrderSaga>() {
 
             step("shipping") {
                 execute {
-                    println("shipping order for $customerName (txId=$txId)")
+                    //println("shipping order for $customerName (txId=$txId)")
                     // Uncomment to test compensation:
                     // throw RuntimeException("shipping service unavailable")
                 }
@@ -245,13 +245,31 @@ class Runner(val engine: SagaEngine, val runner: SagaEngineRunner, val eventBus 
         eventBus.subscribe<ApprovalDenied>(ApprovalDenied::class)     { event -> EventDispatcher.dispatch(event) }
         eventBus.subscribe<PaymentConfirmed>(PaymentConfirmed::class) { event -> EventDispatcher.dispatch(event) }
 
-        val latch = java.util.concurrent.CountDownLatch(1)
+        val loops = 5000
+        val latch = java.util.concurrent.CountDownLatch(loops)
 
-        val sagaId = engine.send(PlaceOrderCommand(customerName = "Andreas", amount = 1499.99))
-        engine.onComplete(sagaId) { success ->
-            println(if (success) "Order saga completed!" else "Order saga failed/compensated")
-            latch.countDown()
+        val startTime = System.nanoTime()
+
+        for (i in 1..loops) {
+            val sagaId = engine.send(
+                PlaceOrderCommand(customerName = "Andreas", amount = 1499.99)
+            )
+
+            engine.onComplete(sagaId) { success ->
+                latch.countDown()
+            }
         }
+
+// Wait for all iterations to complete
+        latch.await()
+
+        val endTime = System.nanoTime()
+        val totalTimeMs = (endTime - startTime) / 1_000_000.0
+        val avgMs = totalTimeMs / loops
+
+        println("Iterations: $loops")
+        println("Total time: %.2f ms".format(totalTimeMs))
+        println("Average per iteration: %.4f ms".format(avgMs))
 
         /*val sagaId2 = engine.send(PlaceOrderCommand(customerName = "Bob", amount = 49.99))
         engine.onComplete(sagaId2) { success ->
